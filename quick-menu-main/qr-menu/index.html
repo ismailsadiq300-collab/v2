@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Restaurant QR Menu</title>
+  <meta name="description" content="Scan the QR code at your table to browse our menu and place orders directly.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Menu Page -->
+    <div id="menu-page" class="page">
+      <header class="header">
+        <h1>🍽️ Our Menu</h1>
+        <p id="table-info" class="table-badge">Table #1</p>
+      </header>
+
+      <nav class="category-nav">
+        <button class="category-btn active" data-category="all">All</button>
+        <button class="category-btn" data-category="Main">Main</button>
+        <button class="category-btn" data-category="Side">Side</button>
+        <button class="category-btn" data-category="Drink">Drink</button>
+      </nav>
+
+      <main id="menu-items" class="menu-grid">
+        <!-- Menu items will be loaded here -->
+      </main>
+
+      <div id="cart-summary" class="cart-summary hidden">
+        <div class="cart-info">
+          <span id="cart-count">0 items</span>
+          <span id="cart-total">0 QAR</span>
+        </div>
+        <button id="view-cart-btn" class="btn btn-primary">View Cart</button>
+      </div>
+    </div>
+
+    <!-- Cart Page -->
+    <div id="cart-page" class="page hidden">
+      <header class="header">
+        <button id="back-to-menu" class="btn-back">← Back</button>
+        <h1>Your Cart</h1>
+      </header>
+
+      <main id="cart-items" class="cart-items">
+        <!-- Cart items will be loaded here -->
+      </main>
+
+      <div id="cart-empty" class="empty-state">
+        <p>🛒 Your cart is empty</p>
+        <button id="browse-menu-btn" class="btn btn-secondary">Browse Menu</button>
+      </div>
+
+      <div id="cart-footer" class="cart-footer hidden">
+        <div class="total-row">
+          <span>Total:</span>
+          <span id="total-price">0 QAR</span>
+        </div>
+        <button id="place-order-btn" class="btn btn-primary btn-large">Place Order</button>
+      </div>
+    </div>
+
+    <!-- Order Success Page -->
+    <div id="success-page" class="page hidden">
+      <div class="success-content">
+        <div class="success-icon">✓</div>
+        <h1>Order Placed!</h1>
+        <p>Your order has been sent to the kitchen.</p>
+        <p id="order-table-info">Table #1</p>
+        <button id="new-order-btn" class="btn btn-primary">Order More</button>
+      </div>
+    </div>
+
+    <!-- Admin Login Page -->
+    <div id="admin-login-page" class="page hidden">
+      <header class="header">
+        <h1>🔐 Admin Login</h1>
+      </header>
+      <div class="login-container">
+        <input type="password" id="admin-password" placeholder="Enter admin password" class="input">
+        <button id="admin-login-btn" class="btn btn-primary btn-large">Login</button>
+        <p id="login-error" class="error-text"></p>
+      </div>
+    </div>
+
+    <!-- Admin Page -->
+    <div id="admin-page" class="page hidden">
+      <header class="header">
+        <h1>🍳 Kitchen Orders</h1>
+        <div class="header-actions">
+          <a href="?admin" class="btn btn-secondary btn-small">Refresh</a>
+          <button id="admin-logout-btn" class="btn btn-secondary btn-small">Logout</button>
+        </div>
+      </header>
+
+      <div class="admin-controls">
+        <select id="status-filter" class="select">
+          <option value="all">All Orders</option>
+          <option value="new">New</option>
+          <option value="preparing">Preparing</option>
+          <option value="ready">Ready</option>
+          <option value="served">Served</option>
+        </select>
+      </div>
+
+      <main id="orders-list" class="orders-list">
+        <!-- Orders will be loaded here -->
+      </main>
+
+      <div id="no-orders" class="empty-state hidden">
+        <p>📋 No orders yet</p>
+      </div>
+    </div>
+
+    <!-- QR Codes Page -->
+    <div id="qr-page" class="page hidden">
+      <header class="header">
+        <h1>📱 Table QR Codes</h1>
+        <a href="?admin" class="btn btn-secondary btn-small">Back to Admin</a>
+      </header>
+
+      <main id="qr-codes" class="qr-grid">
+        <!-- QR codes will be generated here -->
+      </main>
+    </div>
+  </div>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+  <!-- QR Code Library -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

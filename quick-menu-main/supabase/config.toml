@@ -1,0 +1,7 @@
+project_id = "llkvfataaxatjeahpyat"
+
+[functions.send-telegram-alert]
+verify_jwt = false
+
+[functions.analyze-reviews]
+verify_jwt = false
