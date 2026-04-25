@@ -29,7 +29,7 @@ export default function WasteReport() {
       .gte('created_at', weekAgo)
       .order('created_at', { ascending: false })
       .then(({ data }) => {
-        if (data) setLogs(data as unknown as WasteLog[])
+        if (data) setLogs(data as WasteLog[])
         setLoading(false)
       })
   }, [])

@@ -1,9 +1,9 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { addDoc, collection, doc, onSnapshot, orderBy, query, Timestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { supabase } from '@/integrations/supabase/client';
-import type { TablesUpdate } from '@/integrations/supabase/types';
+import type { Tables, TablesUpdate } from '@/integrations/supabase/types';
 import { Order } from '@/types/menu';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,11 +21,11 @@ import {
   ChefHat,
   Clock,
   ClipboardList,
-  DollarSign,
   HandHelping,
   Lock,
   LockKeyhole,
   LogOut,
+  MessageCircle,
   Package,
   QrCode,
   ReceiptText,
@@ -85,6 +85,16 @@ interface WasteLog {
   reason: string | null;
   created_at: string;
 }
+
+interface CustomerFeedback {
+  id: string;
+  tableNumber: number;
+  message: string;
+  status: string;
+  timestamp: Date;
+}
+
+type OrderRow = Tables<'orders'>;
 
 const statusConfig = {
   new: { label: 'New', color: 'bg-primary text-primary-foreground', icon: Clock },
@@ -438,6 +448,41 @@ const getStatusLabelKey = (status: Order['status']): 'received' | 'preparing' | 
   return 'served';
 };
 
+const isOrderStatus = (status: unknown): status is Order['status'] =>
+  status === 'new' || status === 'preparing' || status === 'ready' || status === 'served';
+
+const parseOrderItems = (items: unknown): Order['items'] => {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+
+      const value = item as Record<string, unknown>;
+      const name = typeof value.name === 'string' ? value.name : '';
+      const quantity = Number(value.quantity);
+      const price = Number(value.price);
+      const addOns = Array.isArray(value.addOns)
+        ? value.addOns.filter((addOn): addOn is string => typeof addOn === 'string')
+        : [];
+
+      if (!name || !Number.isFinite(quantity) || !Number.isFinite(price)) return null;
+
+      return { name, quantity, price, addOns };
+    })
+    .filter((item): item is Order['items'][number] => Boolean(item));
+};
+
+const mapOrderRow = (row: OrderRow): Order => ({
+  id: row.id,
+  tableNumber: row.table_number,
+  items: parseOrderItems(row.items),
+  totalPrice: Number(row.total_price),
+  notes: row.notes,
+  status: isOrderStatus(row.status) ? row.status : 'new',
+  timestamp: new Date(row.created_at),
+});
+
 const playNotificationSound = () => {
   try {
     type WindowWithLegacyAudio = Window & typeof globalThis & {
@@ -482,6 +527,7 @@ export default function Admin() {
   const [waiterCalls, setWaiterCalls] = useState<WaiterCall[]>([]);
   const [wasteLogs, setWasteLogs] = useState<WasteLog[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [feedbackItems, setFeedbackItems] = useState<CustomerFeedback[]>([]);
   const [loading, setLoading] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return sessionStorage.getItem('adminAuth') === 'true';
@@ -534,54 +580,58 @@ export default function Admin() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    let unsubscribe: () => void = () => {};
+    const fetchOrders = async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-    const setupListener = async () => {
-      try {
-        const ordersQuery = query(collection(db, 'orders'), orderBy('timestamp', 'desc'));
-
-        unsubscribe = onSnapshot(ordersQuery, (snapshot) => {
-          const ordersData = snapshot.docs.map((orderDoc) => ({
-            id: orderDoc.id,
-            ...orderDoc.data(),
-            timestamp: orderDoc.data().timestamp?.toDate() || new Date(),
-          })) as Order[];
-
-          if (!isFirstLoad.current) {
-            const newOrders = ordersData.filter(
-              order => order.id && !knownOrderIds.current.has(order.id),
-            );
-            if (newOrders.length > 0) {
-              playNotificationSound();
-            }
-          }
-
-          ordersData.forEach(order => {
-            if (order.id) knownOrderIds.current.add(order.id);
-          });
-          isFirstLoad.current = false;
-
-          setOrders(ordersData);
-          setLoading(false);
-        }, () => {
-          console.log('Firestore connection pending...');
-          setLoading(false);
-        });
-      } catch {
-        console.log('Setting up listener failed');
+      if (error) {
+        console.error('Error loading orders:', error);
         setLoading(false);
+        return;
       }
+
+      const ordersData = (data || []).map(mapOrderRow);
+
+      if (!isFirstLoad.current) {
+        const newOrders = ordersData.filter(
+          order => order.id && !knownOrderIds.current.has(order.id),
+        );
+        if (newOrders.length > 0) {
+          playNotificationSound();
+        }
+      }
+
+      ordersData.forEach(order => {
+        if (order.id) knownOrderIds.current.add(order.id);
+      });
+      isFirstLoad.current = false;
+
+      setOrders(ordersData);
+      setLoading(false);
     };
 
-    const timeout = setTimeout(() => {
-      setLoading(false);
-    }, 1500);
+    setLoading(true);
+    fetchOrders();
 
-    setupListener();
+    const channel = supabase
+      .channel('orders-admin')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+        },
+        () => {
+          fetchOrders();
+        },
+      )
+      .subscribe();
 
     return () => {
-      clearTimeout(timeout);
-      unsubscribe();
+      supabase.removeChannel(channel);
     };
   }, [isAuthenticated]);
 
@@ -659,6 +709,29 @@ export default function Admin() {
   }, [isSuperAdmin]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const feedbackQuery = query(collection(db, 'feedback'), orderBy('timestamp', 'desc'));
+    const unsubscribe = onSnapshot(feedbackQuery, (snapshot) => {
+      const nextFeedback = snapshot.docs.map((feedbackDoc) => {
+        const data = feedbackDoc.data();
+
+        return {
+          id: feedbackDoc.id,
+          tableNumber: typeof data.tableNumber === 'number' ? data.tableNumber : 1,
+          message: typeof data.message === 'string' ? data.message : '',
+          status: typeof data.status === 'string' ? data.status : 'new',
+          timestamp: data.timestamp?.toDate() || new Date(),
+        };
+      });
+
+      setFeedbackItems(nextFeedback);
+    });
+
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     if (!isSuperAdmin) return;
 
     const fetchWasteLogs = async () => {
@@ -673,6 +746,15 @@ export default function Admin() {
     };
 
     fetchWasteLogs();
+
+    const channel = supabase
+      .channel('waste-logs-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'waste_logs' }, () => {
+        fetchWasteLogs();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [isSuperAdmin]);
 
   const activeOrders = orders.filter(order => order.status !== 'served');
@@ -720,6 +802,8 @@ export default function Admin() {
     }, {} as Record<string, number>);
     const topItem = Object.entries(itemTotals).sort((a, b) => b[1] - a[1])[0];
 
+    const netMargin = totalRevenue > 0 ? (net / totalRevenue) * 100 : 0;
+
     return {
       servedRevenue,
       pendingRevenue,
@@ -731,6 +815,7 @@ export default function Admin() {
       categoryTotals,
       biggestCategory,
       topItem,
+      netMargin,
     };
   }, [orders, totalRevenue, expenses, wasteLogs]);
 
@@ -754,10 +839,13 @@ export default function Admin() {
   };
 
   const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
-    try {
-      await updateDoc(doc(db, 'orders', orderId), { status: newStatus });
-    } catch {
-      console.log('Status update pending...');
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: newStatus })
+      .eq('id', orderId);
+
+    if (error) {
+      console.error('Error updating order status:', error);
     }
   };
 
@@ -850,6 +938,7 @@ export default function Admin() {
     }
 
     setIsSavingExpense(true);
+    setSuperError('');
     try {
       await addDoc(collection(db, 'expenses'), {
         title: expenseForm.title.trim(),
@@ -867,6 +956,8 @@ export default function Admin() {
       setIsSavingExpense(false);
     }
   };
+
+  const accountingPeriod = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
   if (!isAuthenticated) {
     return (
@@ -1006,9 +1097,12 @@ export default function Admin() {
         )}
 
         <Tabs defaultValue="orders" className="space-y-5">
-          <TabsList className="grid h-auto w-full grid-cols-3">
+          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-4">
             <TabsTrigger value="orders" className="py-3">
               {t('orders')}
+            </TabsTrigger>
+            <TabsTrigger value="feedback" className="py-3">
+              Feedback
             </TabsTrigger>
             <TabsTrigger value="prep" className="py-3">
               {t('kitchenPrep')}
@@ -1092,6 +1186,38 @@ export default function Admin() {
                     </Card>
                   );
                 })}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="feedback" className="space-y-4">
+            {feedbackItems.length === 0 ? (
+              <Card className="p-12 text-center">
+                <MessageCircle className="h-16 w-16 mx-auto text-muted-foreground/30 mb-4" />
+                <h2 className="text-xl font-semibold mb-2">No feedback yet</h2>
+                <p className="text-muted-foreground">Customer comments will appear here in real time.</p>
+              </Card>
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {feedbackItems.map(item => (
+                  <Card key={item.id} className="p-5">
+                    <div className="flex items-start justify-between gap-4 mb-3">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-bold text-xl">{t('table')} {item.tableNumber}</span>
+                          <Badge className="bg-primary text-primary-foreground">
+                            {item.status}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">{formatTime(item.timestamp)}</p>
+                      </div>
+                      <MessageCircle className="h-6 w-6 text-primary shrink-0" />
+                    </div>
+                    <p className="rounded-lg bg-muted/50 p-3 text-sm leading-6 text-foreground whitespace-pre-wrap">
+                      {item.message}
+                    </p>
+                  </Card>
+                ))}
               </div>
             )}
           </TabsContent>
@@ -1234,9 +1360,9 @@ export default function Admin() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="accounting" className="space-y-5 rounded-lg border border-cyan-200 bg-cyan-50/70 p-4">
+          <TabsContent value="accounting" className="space-y-5">
             {!isSuperAdmin ? (
-              <Card className="max-w-md border-cyan-200 p-6 shadow-sm">
+              <Card className="max-w-md p-6 shadow-sm">
                 <div className="flex items-center gap-3 mb-4">
                   <LockKeyhole className="h-8 w-8 text-primary" />
                   <div>
@@ -1260,65 +1386,138 @@ export default function Admin() {
               </Card>
             ) : (
               <>
+                {/* Statement header */}
+                <div className="rounded-xl bg-gradient-to-r from-slate-800 to-slate-700 px-6 py-5 text-white">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-1">ACCOUNTING</p>
+                  <h1 className="text-2xl font-bold">Accounting Statement</h1>
+                  <p className="text-sm text-slate-300 mt-1">Review income and outcome, calculate net result for Al Fanar Restaurant</p>
+                </div>
+
+                {/* Metadata row */}
+                <div className="flex flex-wrap gap-2 text-sm">
+                  <span className="rounded-full bg-muted px-3 py-1 font-medium">Al Fanar Restaurant</span>
+                  <span className="rounded-full bg-muted px-3 py-1 font-medium">{accountingPeriod}</span>
+                  <span className="rounded-full bg-muted px-3 py-1 font-medium">Currency: QAR</span>
+                  <span className={`rounded-full px-3 py-1 font-medium ${accounting.netMargin >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                    Net Margin: {accounting.netMargin.toFixed(1)}%
+                  </span>
+                </div>
+
+                {/* 4 KPI cards */}
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <Card className="border-cyan-200 bg-white p-4 shadow-sm">
-                    <DollarSign className="h-5 w-5 text-primary mb-2" />
-                    <p className="text-sm text-muted-foreground">{t('totalIncome')}</p>
-                    <p className="text-2xl font-bold">{formatMoney(totalRevenue)}</p>
+                  <Card className="p-4 border-l-4 border-l-emerald-500 bg-white shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Total Income</p>
+                    <p className="text-2xl font-bold text-emerald-700">{formatMoney(totalRevenue)}</p>
+                    <p className="text-xs text-muted-foreground mt-1">All orders revenue</p>
                   </Card>
-                  <Card className="border-cyan-200 bg-white p-4 shadow-sm">
-                    <Banknote className="h-5 w-5 text-success mb-2" />
-                    <p className="text-sm text-muted-foreground">{t('cashCollected')}</p>
-                    <p className="text-2xl font-bold">{formatMoney(accounting.servedRevenue)}</p>
+                  <Card className="p-4 border-l-4 border-l-red-500 bg-white shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Total Outcome</p>
+                    <p className="text-2xl font-bold text-red-600">{formatMoney(accounting.totalSpending)}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Expenses + waste</p>
                   </Card>
-                  <Card className="border-cyan-200 bg-white p-4 shadow-sm">
-                    <ReceiptText className="h-5 w-5 text-destructive mb-2" />
-                    <p className="text-sm text-muted-foreground">{t('spending')}</p>
-                    <p className="text-2xl font-bold">{formatMoney(accounting.totalSpending)}</p>
+                  <Card className={`p-4 border-l-4 bg-white shadow-sm ${accounting.net >= 0 ? 'border-l-emerald-500' : 'border-l-red-500'}`}>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Net Result</p>
+                    <p className={`text-2xl font-bold ${accounting.net >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{formatMoney(accounting.net)}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{accounting.net >= 0 ? 'Profit' : 'Loss'}</p>
                   </Card>
-                  <Card className="border-cyan-200 bg-white p-4 shadow-sm">
-                    <TrendingUp className="h-5 w-5 text-primary mb-2" />
-                    <p className="text-sm text-muted-foreground">{t('net')}</p>
-                    <p className={`text-2xl font-bold ${accounting.net >= 0 ? 'text-primary' : 'text-destructive'}`}>
-                      {formatMoney(accounting.net)}
-                    </p>
+                  <Card className="p-4 border-l-4 border-l-slate-400 bg-white shadow-sm">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Net Margin</p>
+                    <p className="text-2xl font-bold">{accounting.netMargin.toFixed(1)}%</p>
+                    <p className="text-xs text-muted-foreground mt-1">Income efficiency</p>
                   </Card>
                 </div>
 
-                <Card className="border-cyan-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center gap-3 mb-4">
-                    <Calculator className="h-6 w-6 text-primary" />
+                {/* Income and Outcome card */}
+                <Card className="p-5 bg-white shadow-sm">
+                  <div className="flex items-center justify-between mb-5">
                     <div>
-                      <h2 className="text-xl font-bold">{t('statements')}</h2>
-                      <p className="text-sm text-muted-foreground">{t('accountingReview')}</p>
+                      <h2 className="text-lg font-bold">Income And Outcome</h2>
+                      <p className="text-sm text-muted-foreground">Compare money coming in with money going out</p>
+                    </div>
+                    <span className={`rounded-full px-4 py-1.5 text-sm font-bold ${accounting.net >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                      {formatMoney(accounting.net)}
+                    </span>
+                  </div>
+
+                  {/* Income bar */}
+                  <div className="mb-4">
+                    <div className="flex justify-between text-sm font-medium mb-1.5">
+                      <span className="text-emerald-700">Income</span>
+                      <span className="text-emerald-700 font-bold">{formatMoney(totalRevenue)}</span>
+                    </div>
+                    <div className="h-4 w-full rounded-full bg-emerald-500" />
+                  </div>
+
+                  {/* Outcome bar */}
+                  <div className="mb-6">
+                    <div className="flex justify-between text-sm font-medium mb-1.5">
+                      <span className="text-red-600">Outcome</span>
+                      <span className="text-red-600 font-bold">{formatMoney(accounting.totalSpending)}</span>
+                    </div>
+                    <div className="h-4 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-red-500 transition-all"
+                        style={{ width: totalRevenue > 0 ? `${Math.min((accounting.totalSpending / totalRevenue) * 100, 100)}%` : '0%' }}
+                      />
                     </div>
                   </div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="font-semibold">Pending collection is {formatMoney(accounting.pendingRevenue)}.</p>
-                      <p className="text-sm text-muted-foreground">These are orders not marked as served yet.</p>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="font-semibold">Average order is {formatMoney(accounting.averageOrder)}.</p>
-                      <p className="text-sm text-muted-foreground">Based on all recorded orders.</p>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="font-semibold">
-                        Top item: {accounting.topItem ? `${accounting.topItem[0]} (${accounting.topItem[1]}x)` : 'No orders yet'}.
-                      </p>
-                      <p className="text-sm text-muted-foreground">Useful for prep planning and purchasing.</p>
-                    </div>
-                    <div className="rounded-lg bg-muted/50 p-4">
-                      <p className="font-semibold">
-                        Biggest spending: {accounting.biggestCategory ? `${accounting.biggestCategory[0]} (${formatMoney(accounting.biggestCategory[1])})` : 'No spending yet'}.
-                      </p>
-                      <p className="text-sm text-muted-foreground">Includes manual expenses and waste cost.</p>
-                    </div>
+
+                  {/* Category breakdown */}
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Category Breakdown</p>
+                    {Object.entries(accounting.categoryTotals).length === 0 ? (
+                      <p className="text-sm text-muted-foreground">{t('noSpendingYet')}</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {Object.entries(accounting.categoryTotals)
+                          .sort((a, b) => b[1] - a[1])
+                          .map(([cat, amt]) => (
+                            <div key={cat} className="grid grid-cols-[120px_1fr_100px] items-center gap-3">
+                              <span className="text-sm font-medium truncate">{cat}</span>
+                              <div className="flex gap-2">
+                                <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                                  <div className="h-full rounded-full bg-emerald-400" style={{ width: '2%' }} />
+                                </div>
+                                <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full bg-red-400 transition-all"
+                                    style={{ width: accounting.totalSpending > 0 ? `${(amt / accounting.totalSpending) * 100}%` : '0%' }}
+                                  />
+                                </div>
+                              </div>
+                              <span className="text-sm text-muted-foreground text-right font-semibold">{formatMoney(amt)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </div>
                 </Card>
 
+                {/* Stats row */}
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg bg-blue-50 border border-blue-100 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-blue-500 mb-1">Avg Order</p>
+                    <p className="text-xl font-bold text-blue-800">{formatMoney(accounting.averageOrder)}</p>
+                  </div>
+                  <div className="rounded-lg bg-amber-50 border border-amber-100 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-amber-500 mb-1">Pending Collection</p>
+                    <p className="text-xl font-bold text-amber-800">{formatMoney(accounting.pendingRevenue)}</p>
+                  </div>
+                  <div className="rounded-lg bg-purple-50 border border-purple-100 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-purple-500 mb-1">Top Item</p>
+                    <p className="text-lg font-bold text-purple-800 truncate">
+                      {accounting.topItem ? `${accounting.topItem[0]} (${accounting.topItem[1]}x)` : '—'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-slate-50 border border-slate-200 p-4">
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-500 mb-1">Cash Collected</p>
+                    <p className="text-xl font-bold text-slate-800">{formatMoney(accounting.servedRevenue)}</p>
+                  </div>
+                </div>
+
+                {/* Add Expense + Recent Expenses */}
                 <div className="grid gap-5 xl:grid-cols-[1fr_1.5fr]">
-                  <Card className="border-cyan-200 bg-white p-5 shadow-sm">
+                  <Card className="p-5 bg-white shadow-sm">
                     <h2 className="text-xl font-bold mb-4">{t('addSpending')}</h2>
                     <form onSubmit={handleAddExpense} className="space-y-3">
                       <Input
@@ -1356,50 +1555,22 @@ export default function Admin() {
                     </form>
                   </Card>
 
-                  <Card className="border-cyan-200 bg-white p-5 shadow-sm">
-                    <h2 className="text-xl font-bold mb-4">{t('details')}</h2>
-                    <div className="space-y-4">
-                      <div>
-                        <h3 className="font-semibold mb-2">{t('spendingByCategory')}</h3>
-                        <div className="space-y-2">
-                          {Object.entries(accounting.categoryTotals).length === 0 ? (
-                            <p className="text-sm text-muted-foreground">{t('noSpendingYet')}</p>
-                          ) : (
-                            Object.entries(accounting.categoryTotals)
-                              .sort((a, b) => b[1] - a[1])
-                              .map(([category, amount]) => (
-                                <div key={category} className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
-                                  <span className="font-medium">{category}</span>
-                                  <span className="text-muted-foreground">{formatMoney(amount)}</span>
-                                </div>
-                              ))
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <h3 className="font-semibold mb-2">{t('recentManualSpending')}</h3>
-                        <div className="space-y-2">
-                          {expenses.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">{t('noManualExpenses')}</p>
-                          ) : (
-                            expenses.slice(0, 8).map(expense => (
-                              <div key={expense.id} className="rounded-lg border border-border p-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div>
-                                    <p className="font-semibold">{expense.title}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {expense.category} · {formatTime(expense.createdAt)}
-                                    </p>
-                                    {expense.notes && <p className="text-sm text-muted-foreground mt-1">{expense.notes}</p>}
-                                  </div>
-                                  <span className="font-bold text-destructive">{formatMoney(expense.amount)}</span>
-                                </div>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
+                  <Card className="p-5 bg-white shadow-sm">
+                    <h2 className="text-xl font-bold mb-4">{t('recentManualSpending')}</h2>
+                    <div className="space-y-2">
+                      {expenses.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">{t('noManualExpenses')}</p>
+                      ) : (
+                        expenses.slice(0, 8).map(expense => (
+                          <div key={expense.id} className="flex items-center justify-between rounded-lg border border-border p-3">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-sm truncate">{expense.title}</p>
+                              <p className="text-xs text-muted-foreground">{expense.category} · {formatTime(expense.createdAt)}</p>
+                            </div>
+                            <span className="font-bold text-red-500 shrink-0 ml-3">-{formatMoney(expense.amount)}</span>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </Card>
                 </div>

@@ -34,8 +34,9 @@ export default function Reservations() {
   const fetchReservations = useCallback(async () => {
     let q = supabase.from('reservations').select('*').order('date', { ascending: true }).order('time', { ascending: true })
     if (dateFilter) q = q.eq('date', dateFilter)
-    const { data } = await q
-    if (data) setReservations(data as unknown as Reservation[])
+    const { data, error } = await q
+    if (error) console.error('Failed to fetch reservations:', error)
+    setReservations((data as unknown as Reservation[]) ?? [])
     setLoading(false)
   }, [dateFilter])
 

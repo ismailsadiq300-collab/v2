@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import { Suspense, lazy } from "react";
 import Menu from "./pages/Menu";
 import { ChatWidget } from "./components/ChatWidget";
@@ -25,9 +25,11 @@ const queryClient = new QueryClient();
 
 const AppRoutes = () => {
   const { t } = useI18n();
+  const location = useLocation();
+  const showCustomerTools = location.pathname === "/" || location.pathname === "/reservation";
 
   return (
-    <BrowserRouter>
+    <>
       <Suspense fallback={<div className="container py-8 text-sm text-muted-foreground">{t('loading')}</div>}>
         <Routes>
           <Route path="/" element={<Menu />} />
@@ -44,9 +46,13 @@ const AppRoutes = () => {
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
-      <ChatWidget />
-      <LanguageSelector />
-    </BrowserRouter>
+      {showCustomerTools && (
+        <>
+          <ChatWidget />
+          <LanguageSelector />
+        </>
+      )}
+    </>
   );
 };
 
@@ -56,7 +62,9 @@ const App = () => (
       <I18nProvider>
         <Toaster />
         <Sonner />
-        <AppRoutes />
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
       </I18nProvider>
     </TooltipProvider>
   </QueryClientProvider>

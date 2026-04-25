@@ -22,6 +22,11 @@ import meatMoqalqalImg from '@/assets/meat-moqalqal.png';
 
 import { Badge } from '@/components/ui/badge';
 
+type OrderItemPayload = Order['items'][number];
+
+const isOrderStatus = (status: unknown): status is Order['status'] =>
+  status === 'new' || status === 'preparing' || status === 'ready' || status === 'served';
+
 // Yemeni food categories
 const categories: {
   id: string;
@@ -319,39 +324,27 @@ export default function Menu() {
   useEffect(() => {
     if (!currentOrderId || isDemo) return;
 
-    let unsubscribe: (() => void) | undefined;
-    let cancelled = false;
-
-    async function watchOrderStatus() {
-      try {
-        const [{ doc, onSnapshot }, { db }] = await Promise.all([
-          import('firebase/firestore'),
-          import('@/lib/firebase'),
-        ]);
-
-        if (cancelled) return;
-
-        unsubscribe = onSnapshot(doc(db, 'orders', currentOrderId), (snapshot) => {
-          const nextStatus = snapshot.data()?.status;
-          if (
-            nextStatus === 'new' ||
-            nextStatus === 'preparing' ||
-            nextStatus === 'ready' ||
-            nextStatus === 'served'
-          ) {
+    const channel = supabase
+      .channel(`order-status-${currentOrderId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'orders',
+          filter: `id=eq.${currentOrderId}`,
+        },
+        (payload) => {
+          const nextStatus = payload.new.status;
+          if (isOrderStatus(nextStatus)) {
             setCurrentOrderStatus(nextStatus);
           }
-        });
-      } catch (error) {
-        console.log('Order status updates unavailable');
-      }
-    }
-
-    watchOrderStatus();
+        },
+      )
+      .subscribe();
 
     return () => {
-      cancelled = true;
-      unsubscribe?.();
+      supabase.removeChannel(channel);
     };
   }, [currentOrderId, isDemo]);
 
@@ -456,29 +449,41 @@ export default function Menu() {
     
     try {
       const notes = orderNotes.trim();
-      const [{ collection, addDoc, Timestamp }, { db }] = await Promise.all([
-        import('firebase/firestore'),
-        import('@/lib/firebase'),
-      ]);
-      const orderData = {
-        tableNumber,
-        items: cart.map(item => ({
+      const orderItems: OrderItemPayload[] = cart.map(item => ({
           name: item.name,
           quantity: item.quantity,
           price: item.price,
           addOns: item.selectedAddOns?.map(a => a.name) || []
-        })),
+      }));
+      const { data, error } = await supabase
+        .from('orders')
+        .insert({
+          table_number: tableNumber,
+          items: orderItems,
+          total_price: totalPrice,
+          notes: notes || null,
+          status: 'new',
+        })
+        .select('id')
+        .single();
+
+      if (error) throw error;
+
+      const orderRef = data;
+
+      const orderData: Order = {
+        id: orderRef.id,
+        tableNumber,
+        items: orderItems,
         totalPrice,
         notes: notes || null,
         status: 'new',
-        timestamp: Timestamp.now()
+        timestamp: new Date(),
       };
-
-      const orderRef = await addDoc(collection(db, 'orders'), orderData);
       
       clearCart();
       setOrderNotes('');
-      setCurrentOrderId(orderRef.id);
+      setCurrentOrderId(orderData.id || null);
       setCurrentOrderStatus('new');
       setOrderPlaced(true);
       
@@ -487,10 +492,13 @@ export default function Menu() {
         description: "Your order has been sent to the kitchen.",
       });
     } catch (error) {
-      console.error('Error placing order:', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('Order placement failed:', { error, tableNumber, cart });
       toast({
         title: "Could not place order",
-        description: "Please try again or ask a waiter for help.",
+        description: import.meta.env.DEV
+          ? `Debug: ${errMsg}`
+          : "Please try again or ask a waiter for help.",
         variant: "destructive",
       });
     } finally {
@@ -623,6 +631,21 @@ export default function Menu() {
               </div>
             </div>
 
+            {cart.length > 0 && (
+              <section className="lg:hidden">
+                <Cart
+                  items={cart}
+                  totalPrice={totalPrice}
+                  orderNotes={orderNotes}
+                  onAdd={addToCart}
+                  onRemove={removeFromCart}
+                  onOrderNotesChange={setOrderNotes}
+                  onSubmit={handleSubmitOrder}
+                  isSubmitting={isSubmitting}
+                />
+              </section>
+            )}
+
             {/* Menu Content */}
             <div className="min-w-0 space-y-8">
               {categories.map(cat => (
@@ -645,7 +668,7 @@ export default function Menu() {
             </div>
 
             {/* Cart */}
-            <section className="lg:sticky lg:top-24 lg:self-start">
+            <section className="hidden lg:block lg:sticky lg:top-24 lg:self-start">
               <Cart 
                 items={cart} 
                 totalPrice={totalPrice}

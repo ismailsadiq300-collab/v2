@@ -62,6 +62,36 @@ export type Database = {
         }
         Relationships: []
       }
+      orders: {
+        Row: {
+          created_at: string
+          id: string
+          items: Json
+          notes: string | null
+          status: string
+          table_number: number
+          total_price: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          items?: Json
+          notes?: string | null
+          status?: string
+          table_number: number
+          total_price: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          items?: Json
+          notes?: string | null
+          status?: string
+          table_number?: number
+          total_price?: number
+        }
+        Relationships: []
+      }
       reservations: {
         Row: {
           created_at: string
