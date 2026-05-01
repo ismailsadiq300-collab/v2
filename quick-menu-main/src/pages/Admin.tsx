@@ -35,8 +35,10 @@ import {
   LogOut,
   MessageCircle,
   Package,
+  Plus,
   QrCode,
   ReceiptText,
+  Trash2,
   TrendingUp,
   Utensils,
 } from 'lucide-react';
@@ -103,6 +105,14 @@ interface CustomerFeedback {
 }
 
 type OrderRow = Tables<'orders'>;
+
+interface ManualOrderItem {
+  id: string;
+  name: string;
+  quantity: string;
+  price: string;
+  addOns: string;
+}
 
 const statusConfig = {
   new: { label: 'New', color: 'bg-primary text-primary-foreground', icon: Clock },
@@ -548,6 +558,14 @@ export default function Admin() {
   const [error, setError] = useState('');
   const [superError, setSuperError] = useState('');
   const [deliveryEtaInputs, setDeliveryEtaInputs] = useState<Record<string, string>>({});
+  const [manualOrderTable, setManualOrderTable] = useState('1');
+  const [manualOrderType, setManualOrderType] = useState<'dine-in' | 'delivery' | 'pickup'>('dine-in');
+  const [manualOrderNotes, setManualOrderNotes] = useState('');
+  const [manualOrderItems, setManualOrderItems] = useState<ManualOrderItem[]>([
+    { id: crypto.randomUUID(), name: '', quantity: '1', price: '', addOns: '' },
+  ]);
+  const [manualOrderError, setManualOrderError] = useState('');
+  const [isSavingManualOrder, setIsSavingManualOrder] = useState(false);
   const [requirementStates, setRequirementStates] = useState<Record<string, RequirementState>>(() => {
     try {
       const saved = localStorage.getItem('kitchenRequirementStatuses');
@@ -890,6 +908,100 @@ export default function Admin() {
     updateOrderStatus(order.id, newStatus);
   };
 
+  const updateManualOrderItem = (itemId: string, field: keyof Omit<ManualOrderItem, 'id'>, value: string) => {
+    setManualOrderItems(prev => prev.map(item => (
+      item.id === itemId ? { ...item, [field]: value } : item
+    )));
+  };
+
+  const addManualOrderItem = () => {
+    setManualOrderItems(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), name: '', quantity: '1', price: '', addOns: '' },
+    ]);
+  };
+
+  const removeManualOrderItem = (itemId: string) => {
+    setManualOrderItems(prev => (
+      prev.length === 1
+        ? [{ id: crypto.randomUUID(), name: '', quantity: '1', price: '', addOns: '' }]
+        : prev.filter(item => item.id !== itemId)
+    ));
+  };
+
+  const manualOrderPayloadItems: Order['items'] = manualOrderItems
+    .map(item => {
+      const name = item.name.trim();
+      const quantity = Number.parseInt(item.quantity, 10);
+      const price = Number.parseFloat(item.price);
+
+      if (!name || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) {
+        return null;
+      }
+
+      return {
+        name,
+        quantity,
+        price,
+        addOns: item.addOns
+          .split(',')
+          .map(addOn => addOn.trim())
+          .filter(Boolean),
+      };
+    })
+    .filter((item): item is Order['items'][number] => Boolean(item));
+
+  const manualOrderTotal = manualOrderPayloadItems.reduce(
+    (sum, item) => sum + item.quantity * item.price,
+    0,
+  );
+
+  const handleCreateManualOrder = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    const tableNumber = Number.parseInt(manualOrderTable, 10);
+    if (!Number.isFinite(tableNumber) || tableNumber <= 0) {
+      setManualOrderError('Enter a valid table/order number');
+      return;
+    }
+
+    if (manualOrderPayloadItems.length === 0) {
+      setManualOrderError('Add at least one meal with quantity and price');
+      return;
+    }
+
+    const orderTypeNote = manualOrderType === 'delivery'
+      ? 'Order type: Delivery'
+      : manualOrderType === 'pickup'
+        ? 'Order type: Pickup from restaurant'
+        : 'Order type: Manual dine-in';
+    const notes = [orderTypeNote, manualOrderNotes.trim()].filter(Boolean).join('\n');
+
+    setIsSavingManualOrder(true);
+    setManualOrderError('');
+    const { error } = await supabase
+      .from('orders')
+      .insert({
+        table_number: tableNumber,
+        items: manualOrderPayloadItems,
+        total_price: manualOrderTotal,
+        notes,
+        status: 'new',
+      });
+
+    setIsSavingManualOrder(false);
+    if (error) {
+      console.error('Error creating manual order:', error);
+      setManualOrderError('Could not create manual order');
+      return;
+    }
+
+    setManualOrderTable('1');
+    setManualOrderType('dine-in');
+    setManualOrderNotes('');
+    setManualOrderItems([{ id: crypto.randomUUID(), name: '', quantity: '1', price: '', addOns: '' }]);
+  };
+
   const getNextStatus = (currentStatus: Order['status']): Order['status'] | null => {
     const flow: Order['status'][] = ['new', 'preparing', 'ready', 'served'];
     const currentIndex = flow.indexOf(currentStatus);
@@ -1154,6 +1266,128 @@ export default function Admin() {
           </TabsList>
 
           <TabsContent value="orders" className="space-y-4">
+            <Card className="p-5">
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-bold">Add Manual Order</h2>
+                  <p className="text-sm text-muted-foreground">Create an order taken by staff. It will appear below as a new received order.</p>
+                </div>
+                <Badge variant="outline" className="w-fit bg-primary/10 text-primary">
+                  Total {formatMoney(manualOrderTotal)}
+                </Badge>
+              </div>
+
+              <form onSubmit={handleCreateManualOrder} className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-[1fr_1fr_2fr]">
+                  <div className="space-y-2">
+                    <label htmlFor="manual-table" className="text-sm font-semibold">Table / order number</label>
+                    <Input
+                      id="manual-table"
+                      type="number"
+                      min="1"
+                      value={manualOrderTable}
+                      onChange={(event) => setManualOrderTable(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="manual-type" className="text-sm font-semibold">Order type</label>
+                    <select
+                      id="manual-type"
+                      value={manualOrderType}
+                      onChange={(event) => setManualOrderType(event.target.value as 'dine-in' | 'delivery' | 'pickup')}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    >
+                      <option value="dine-in">Dine-in</option>
+                      <option value="delivery">Delivery</option>
+                      <option value="pickup">Pickup</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="manual-notes" className="text-sm font-semibold">Notes</label>
+                    <Input
+                      id="manual-notes"
+                      value={manualOrderNotes}
+                      onChange={(event) => setManualOrderNotes(event.target.value)}
+                      placeholder="Optional kitchen/customer notes"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {manualOrderItems.map((item, index) => (
+                    <div key={item.id} className="grid gap-2 rounded-lg border border-border p-3 md:grid-cols-[2fr_0.75fr_1fr_1.5fr_auto]">
+                      <div className="space-y-2">
+                        <label htmlFor={`manual-name-${item.id}`} className="text-xs font-semibold uppercase text-muted-foreground">
+                          Meal {index + 1}
+                        </label>
+                        <Input
+                          id={`manual-name-${item.id}`}
+                          value={item.name}
+                          onChange={(event) => updateManualOrderItem(item.id, 'name', event.target.value)}
+                          placeholder="Meal name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label htmlFor={`manual-qty-${item.id}`} className="text-xs font-semibold uppercase text-muted-foreground">Qty</label>
+                        <Input
+                          id={`manual-qty-${item.id}`}
+                          type="number"
+                          min="1"
+                          value={item.quantity}
+                          onChange={(event) => updateManualOrderItem(item.id, 'quantity', event.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label htmlFor={`manual-price-${item.id}`} className="text-xs font-semibold uppercase text-muted-foreground">Price</label>
+                        <Input
+                          id={`manual-price-${item.id}`}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={item.price}
+                          onChange={(event) => updateManualOrderItem(item.id, 'price', event.target.value)}
+                          placeholder="0.00"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label htmlFor={`manual-addons-${item.id}`} className="text-xs font-semibold uppercase text-muted-foreground">Add-ons</label>
+                        <Input
+                          id={`manual-addons-${item.id}`}
+                          value={item.addOns}
+                          onChange={(event) => updateManualOrderItem(item.id, 'addOns', event.target.value)}
+                          placeholder="Comma separated"
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="h-10 w-10"
+                          onClick={() => removeManualOrderItem(item.id)}
+                          aria-label="Remove meal"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {manualOrderError && <p className="text-sm text-destructive">{manualOrderError}</p>}
+
+                <div className="flex flex-col gap-2 sm:flex-row sm:justify-between">
+                  <Button type="button" variant="outline" className="gap-2" onClick={addManualOrderItem}>
+                    <Plus className="h-4 w-4" />
+                    Add Meal
+                  </Button>
+                  <Button type="submit" disabled={isSavingManualOrder || manualOrderPayloadItems.length === 0}>
+                    {isSavingManualOrder ? 'Creating...' : 'Create Order'}
+                  </Button>
+                </div>
+              </form>
+            </Card>
+
             {loading ? (
               <div className="text-center py-12">
                 <ChefHat className="h-12 w-12 mx-auto text-primary animate-pulse" />
