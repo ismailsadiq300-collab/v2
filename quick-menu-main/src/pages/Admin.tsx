@@ -14,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useI18n } from '@/lib/i18n';
 import {
   getOrderNumber,
-  getOrderStatusUrl,
+  getDriverOrderStatusUrl,
   getOrderWhatsappUrl,
   getExpectedDeliveryTime,
   isDeliveryOrder,
@@ -877,7 +877,7 @@ export default function Admin() {
         status: newStatus,
       };
 
-      window.open(getOrderWhatsappUrl(acceptedOrder, getOrderStatusUrl(order.id)), '_blank', 'noopener,noreferrer');
+      window.open(getOrderWhatsappUrl(acceptedOrder, getDriverOrderStatusUrl(order.id)), '_blank', 'noopener,noreferrer');
       updateOrderStatus(order.id, newStatus, nextNotes);
       setDeliveryEtaInputs(prev => {
         const next = { ...prev };

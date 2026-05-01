@@ -19,7 +19,6 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { useI18n } from '@/lib/i18n';
 import type { TranslationKey } from '@/lib/i18n';
-import { getOrderWhatsappUrl } from '@/lib/orderDetails';
 import restaurantLogo from '@/assets/restaurant-logo.png';
 import lahsaEggsImg from '@/assets/lahsa-eggs.png';
 import muttonLiverImg from '@/assets/mutton-liver.png';
@@ -379,16 +378,6 @@ export default function Menu() {
     setSelectedFulfillmentMode(null);
   };
 
-  const openDeliveryWhatsapp = (order: Order, targetWindow?: Window | null) => {
-    const whatsappUrl = getOrderWhatsappUrl(order);
-    if (targetWindow && !targetWindow.closed) {
-      targetWindow.location.href = whatsappUrl;
-      return;
-    }
-
-    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
-  };
-
   // Subscribe to waiter call status updates for this table
   useEffect(() => {
     if (!pendingWaiterCallId) return;
@@ -530,8 +519,7 @@ export default function Menu() {
 
   const handleSubmitOrder = async () => {
     if (cart.length === 0) return;
-    
-    const whatsappWindow = fulfillmentMode === 'delivery' ? window.open('', '_blank') : null;
+
     setIsSubmitting(true);
     
     // Demo mode: simulate order without Firebase
@@ -568,9 +556,6 @@ export default function Menu() {
         title: "Demo Order Placed! 🎉",
         description: "This is a demo - no real order was sent.",
       });
-      if (fulfillmentMode === 'delivery') {
-        openDeliveryWhatsapp(demoOrderData, whatsappWindow);
-      }
       return;
     }
     
@@ -628,16 +613,11 @@ export default function Menu() {
       
       toast({
         title: "Order placed! 🎉",
-        description: "Your order has been sent to the kitchen.",
+        description: fulfillmentMode === 'delivery'
+          ? "Your order has been sent to admin for delivery."
+          : "Your order has been sent to the kitchen.",
       });
-
-      if (fulfillmentMode === 'delivery') {
-        openDeliveryWhatsapp(orderData, whatsappWindow);
-      }
     } catch (error) {
-      if (whatsappWindow && !whatsappWindow.closed) {
-        whatsappWindow.close();
-      }
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error('Order placement failed:', { error, tableNumber, cart });
       toast({

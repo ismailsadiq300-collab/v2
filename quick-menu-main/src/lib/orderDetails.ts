@@ -57,6 +57,9 @@ export const withExpectedDeliveryTime = (notes: string | null | undefined, expec
 export const getOrderStatusUrl = (orderId: string, origin = window.location.origin) =>
   `${origin}/order-status/${orderId}`;
 
+export const getDriverOrderStatusUrl = (orderId: string, origin = window.location.origin) =>
+  `${getOrderStatusUrl(orderId, origin)}?driver=1`;
+
 export const getOrderWhatsappMessage = (order: Order, statusUrl?: string) => {
   const orderNumber = getOrderNumber(order.id);
   const address = getNoteValue(order.notes, 'Delivery address');

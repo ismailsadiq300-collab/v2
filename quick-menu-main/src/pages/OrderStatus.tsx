@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { Bike, ChefHat, Clock, PackageCheck, ReceiptText, Utensils } from 'lucide-react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Bike, ChefHat, Clock, MapPin, PackageCheck, ReceiptText, Utensils } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import type { Order } from '@/types/menu';
-import { getExpectedDeliveryTime, getOrderNumber, isDeliveryOrder } from '@/lib/orderDetails';
+import { getExpectedDeliveryTime, getNoteValue, getOrderNumber, isDeliveryOrder } from '@/lib/orderDetails';
+import { useToast } from '@/hooks/use-toast';
 
 const isOrderStatus = (status: unknown): status is Order['status'] =>
   status === 'new' || status === 'preparing' || status === 'ready' || status === 'served';
@@ -35,10 +37,13 @@ const statusLabels: Record<Order['status'], { label: string; description: string
 
 export default function OrderStatus() {
   const { orderId } = useParams();
+  const [searchParams] = useSearchParams();
+  const { toast } = useToast();
   const [status, setStatus] = useState<Order['status'] | null>(null);
   const [notes, setNotes] = useState<string | null>(null);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
     if (!orderId) {
@@ -89,13 +94,44 @@ export default function OrderStatus() {
 
   const orderNumber = getOrderNumber(orderId);
   const expectedTime = getExpectedDeliveryTime(notes);
+  const mapsUrl = getNoteValue(notes, 'Google Maps');
+  const address = getNoteValue(notes, 'Delivery address');
+  const phone = getNoteValue(notes, 'Contact number');
   const statusInfo = status ? statusLabels[status] : null;
   const StatusIcon = statusInfo?.icon || Clock;
   const deliveryOrder = isDeliveryOrder({ notes });
+  const isDriverView = searchParams.get('driver') === '1';
   const steps: Order['status'][] = ['new', 'preparing', 'ready', 'served'];
   const currentStepIndex = status ? steps.indexOf(status) : 0;
-  const heroTitle = deliveryOrder ? 'Delivery Tracking' : 'Order Tracking';
+  const heroTitle = isDriverView ? 'Driver Order Page' : deliveryOrder ? 'Delivery Tracking' : 'Order Tracking';
   const readyCopy = deliveryOrder ? 'Your order is ready for the driver.' : 'Your order is ready.';
+  const driverStatuses: Order['status'][] = ['preparing', 'ready', 'served'];
+
+  const updateStatus = async (nextStatus: Order['status']) => {
+    if (!orderId) return;
+
+    setIsUpdating(true);
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: nextStatus })
+      .eq('id', orderId);
+
+    setIsUpdating(false);
+    if (error) {
+      toast({
+        title: 'Could not update status',
+        description: 'Please try again from the admin page.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setStatus(nextStatus);
+    toast({
+      title: 'Status updated',
+      description: `Order #${orderNumber} is now ${statusLabels[nextStatus].label}.`,
+    });
+  };
 
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_hsl(var(--primary)/0.12),_transparent_34rem),linear-gradient(180deg,_hsl(var(--background)),_hsl(var(--muted)/0.55))] px-4 py-8">
@@ -149,6 +185,24 @@ export default function OrderStatus() {
                 </div>
               )}
 
+              {isDriverView && deliveryOrder && (
+                <div className="mb-5 space-y-3 rounded-lg border border-primary/20 bg-card p-4 text-left">
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-primary">Delivery details</p>
+                    {address && <p className="mt-1 text-sm font-medium">{address}</p>}
+                    {phone && <p className="mt-1 text-sm text-muted-foreground">Phone: {phone}</p>}
+                  </div>
+                  {mapsUrl && (
+                    <Button asChild className="w-full gap-2">
+                      <a href={mapsUrl} target="_blank" rel="noreferrer">
+                        <MapPin className="h-4 w-4" />
+                        Open customer location
+                      </a>
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="mb-5 grid grid-cols-4 gap-2">
                 {steps.map((step, index) => {
                   const isActive = index <= currentStepIndex;
@@ -178,6 +232,22 @@ export default function OrderStatus() {
               <Badge variant="outline" className="mb-4">
                 Live status updates
               </Badge>
+              {isDriverView && deliveryOrder && (
+                <div className="mb-5 grid gap-2 sm:grid-cols-3">
+                  {driverStatuses.map((nextStatus) => (
+                    <Button
+                      key={nextStatus}
+                      type="button"
+                      variant={status === nextStatus ? 'default' : 'outline'}
+                      disabled={isUpdating}
+                      onClick={() => updateStatus(nextStatus)}
+                      className="h-11"
+                    >
+                      {statusLabels[nextStatus].label}
+                    </Button>
+                  ))}
+                </div>
+              )}
               {createdAt && (
                 <p className="text-xs text-muted-foreground">
                   Ordered at {new Date(createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
