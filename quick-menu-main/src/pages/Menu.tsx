@@ -5,12 +5,21 @@ import { useCart } from '@/hooks/useCart';
 import { MenuCard } from '@/components/MenuCard';
 import { Cart } from '@/components/Cart';
 import { OrderSuccess } from '@/components/OrderSuccess';
-import { Settings, Eye, Bell } from 'lucide-react';
+import { Settings, Eye, Bell, Store, Truck, LocateFixed, MapPin } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { useI18n } from '@/lib/i18n';
 import type { TranslationKey } from '@/lib/i18n';
+import { getOrderWhatsappUrl } from '@/lib/orderDetails';
 import restaurantLogo from '@/assets/restaurant-logo.png';
 import lahsaEggsImg from '@/assets/lahsa-eggs.png';
 import muttonLiverImg from '@/assets/mutton-liver.png';
@@ -23,6 +32,15 @@ import meatMoqalqalImg from '@/assets/meat-moqalqal.png';
 import { Badge } from '@/components/ui/badge';
 
 type OrderItemPayload = Order['items'][number];
+type FulfillmentMode = 'delivery' | 'pickup';
+
+const savedFulfillmentKey = 'alfanar-fulfillment-mode';
+const savedDeliveryAddressKey = 'alfanar-delivery-address';
+const savedDeliveryMapUrlKey = 'alfanar-delivery-map-url';
+const savedDeliveryPhoneKey = 'alfanar-delivery-phone';
+const savedDeliveryCommentKey = 'alfanar-delivery-comment';
+
+const getSavedText = (key: string) => window.localStorage.getItem(key) || '';
 
 const isOrderStatus = (status: unknown): status is Order['status'] =>
   status === 'new' || status === 'preparing' || status === 'ready' || status === 'served';
@@ -271,8 +289,10 @@ const sampleMenuItems: MenuItem[] = [
 export default function Menu() {
   const { t } = useI18n();
   const [searchParams] = useSearchParams();
-  const rawTableNumber = Number.parseInt(searchParams.get('table') || '1', 10);
-  const tableNumber = Number.isFinite(rawTableNumber) && rawTableNumber > 0 ? rawTableNumber : 1;
+  const tableParam = searchParams.get('table');
+  const rawTableNumber = Number.parseInt(tableParam || '', 10);
+  const isTableVisit = tableParam !== null && Number.isFinite(rawTableNumber) && rawTableNumber > 0;
+  const tableNumber = isTableVisit ? rawTableNumber : 1;
   const isDemo = searchParams.get('demo') === 'true';
   
   const [menuItems, setMenuItems] = useState<MenuItem[]>(sampleMenuItems);
@@ -283,9 +303,91 @@ export default function Menu() {
   const [currentOrderStatus, setCurrentOrderStatus] = useState<Order['status']>('new');
   const [isCallingWaiter, setIsCallingWaiter] = useState(false);
   const [pendingWaiterCallId, setPendingWaiterCallId] = useState<string | null>(null);
+  const [fulfillmentMode, setFulfillmentMode] = useState<FulfillmentMode | null>(null);
+  const [selectedFulfillmentMode, setSelectedFulfillmentMode] = useState<FulfillmentMode | null>(null);
+  const [deliveryAddress, setDeliveryAddress] = useState(() => (
+    isTableVisit ? '' : getSavedText(savedDeliveryAddressKey)
+  ));
+  const [deliveryMapUrl, setDeliveryMapUrl] = useState(() => (
+    isTableVisit ? '' : getSavedText(savedDeliveryMapUrlKey)
+  ));
+  const [deliveryPhone, setDeliveryPhone] = useState(() => (
+    isTableVisit ? '' : getSavedText(savedDeliveryPhoneKey)
+  ));
+  const [deliveryComment, setDeliveryComment] = useState(() => (
+    isTableVisit ? '' : getSavedText(savedDeliveryCommentKey)
+  ));
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
   
   const { cart, addToCart, removeFromCart, clearCart, totalPrice } = useCart();
   const { toast } = useToast();
+
+  const hasDeliveryLocation = deliveryAddress.trim().length > 0 || deliveryMapUrl.length > 0;
+  const shouldAskFulfillment = !isTableVisit && !fulfillmentMode;
+
+  const handleSaveFulfillment = (mode: FulfillmentMode) => {
+    window.localStorage.setItem(savedFulfillmentKey, mode);
+    setFulfillmentMode(mode);
+    setSelectedFulfillmentMode(null);
+  };
+
+  const handleSaveDeliveryDetails = () => {
+    window.localStorage.setItem(savedDeliveryAddressKey, deliveryAddress.trim());
+    window.localStorage.setItem(savedDeliveryMapUrlKey, deliveryMapUrl);
+    window.localStorage.setItem(savedDeliveryPhoneKey, deliveryPhone.trim());
+    window.localStorage.setItem(savedDeliveryCommentKey, deliveryComment.trim());
+    handleSaveFulfillment('delivery');
+  };
+
+  const handleDetectLocation = () => {
+    if (!navigator.geolocation) {
+      toast({
+        title: "Location not available",
+        description: "Your browser does not support location detection. Please type your address.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsDetectingLocation(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        const mapUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+        setDeliveryMapUrl(mapUrl);
+        window.localStorage.setItem(savedDeliveryMapUrlKey, mapUrl);
+        setIsDetectingLocation(false);
+        toast({
+          title: "Location added",
+          description: "We saved a Google Maps link for this delivery.",
+        });
+      },
+      () => {
+        setIsDetectingLocation(false);
+        toast({
+          title: "Could not detect location",
+          description: "Please allow location access or type the address manually.",
+          variant: "destructive",
+        });
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 },
+    );
+  };
+
+  const handleChangeFulfillment = () => {
+    setFulfillmentMode(null);
+    setSelectedFulfillmentMode(null);
+  };
+
+  const openDeliveryWhatsapp = (order: Order, targetWindow?: Window | null) => {
+    const whatsappUrl = getOrderWhatsappUrl(order);
+    if (targetWindow && !targetWindow.closed) {
+      targetWindow.location.href = whatsappUrl;
+      return;
+    }
+
+    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+  };
 
   // Subscribe to waiter call status updates for this table
   useEffect(() => {
@@ -350,7 +452,7 @@ export default function Menu() {
 
   // Call waiter function
   const handleCallWaiter = async () => {
-    if (pendingWaiterCallId) return;
+    if (!isTableVisit || pendingWaiterCallId) return;
 
     setIsCallingWaiter(true);
     try {
@@ -429,14 +531,36 @@ export default function Menu() {
   const handleSubmitOrder = async () => {
     if (cart.length === 0) return;
     
+    const whatsappWindow = fulfillmentMode === 'delivery' ? window.open('', '_blank') : null;
     setIsSubmitting(true);
     
     // Demo mode: simulate order without Firebase
-    if (isDemo) {
+      if (isDemo) {
       await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network delay
+      const demoOrderData: Order = {
+        id: `demo-${Date.now()}`,
+        tableNumber,
+        items: cart.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price,
+          addOns: item.selectedAddOns?.map(a => a.name) || [],
+        })),
+        totalPrice,
+        notes: [
+          fulfillmentMode === 'delivery' ? 'Order type: Delivery' : fulfillmentMode === 'pickup' ? 'Order type: Pickup from restaurant' : null,
+          fulfillmentMode === 'delivery' && deliveryAddress.trim() ? `Delivery address: ${deliveryAddress.trim()}` : null,
+          fulfillmentMode === 'delivery' && deliveryMapUrl ? `Google Maps: ${deliveryMapUrl}` : null,
+          fulfillmentMode === 'delivery' && deliveryPhone.trim() ? `Contact number: ${deliveryPhone.trim()}` : null,
+          fulfillmentMode === 'delivery' && deliveryComment.trim() ? `Delivery comment: ${deliveryComment.trim()}` : null,
+          orderNotes.trim(),
+        ].filter(Boolean).join('\n') || null,
+        status: 'new',
+        timestamp: new Date(),
+      };
       clearCart();
       setOrderNotes('');
-      setCurrentOrderId(null);
+      setCurrentOrderId(demoOrderData.id || null);
       setCurrentOrderStatus('new');
       setOrderPlaced(true);
       setIsSubmitting(false);
@@ -444,11 +568,26 @@ export default function Menu() {
         title: "Demo Order Placed! 🎉",
         description: "This is a demo - no real order was sent.",
       });
+      if (fulfillmentMode === 'delivery') {
+        openDeliveryWhatsapp(demoOrderData, whatsappWindow);
+      }
       return;
     }
     
     try {
       const notes = orderNotes.trim();
+      const fulfillmentLabel = fulfillmentMode === 'delivery' ? 'Delivery' : fulfillmentMode === 'pickup' ? 'Pickup from restaurant' : null;
+      const deliveryDetails = fulfillmentMode === 'delivery'
+        ? [
+            deliveryAddress.trim() ? `Delivery address: ${deliveryAddress.trim()}` : null,
+            deliveryMapUrl ? `Google Maps: ${deliveryMapUrl}` : null,
+            deliveryPhone.trim() ? `Contact number: ${deliveryPhone.trim()}` : null,
+            deliveryComment.trim() ? `Delivery comment: ${deliveryComment.trim()}` : null,
+          ].filter(Boolean)
+        : [];
+      const notesWithFulfillment = fulfillmentLabel
+        ? [`Order type: ${fulfillmentLabel}`, ...deliveryDetails, notes].filter(Boolean).join('\n')
+        : notes;
       const orderItems: OrderItemPayload[] = cart.map(item => ({
           name: item.name,
           quantity: item.quantity,
@@ -461,7 +600,7 @@ export default function Menu() {
           table_number: tableNumber,
           items: orderItems,
           total_price: totalPrice,
-          notes: notes || null,
+          notes: notesWithFulfillment || null,
           status: 'new',
         })
         .select('id')
@@ -476,7 +615,7 @@ export default function Menu() {
         tableNumber,
         items: orderItems,
         totalPrice,
-        notes: notes || null,
+        notes: notesWithFulfillment || null,
         status: 'new',
         timestamp: new Date(),
       };
@@ -491,7 +630,14 @@ export default function Menu() {
         title: "Order placed! 🎉",
         description: "Your order has been sent to the kitchen.",
       });
+
+      if (fulfillmentMode === 'delivery') {
+        openDeliveryWhatsapp(orderData, whatsappWindow);
+      }
     } catch (error) {
+      if (whatsappWindow && !whatsappWindow.closed) {
+        whatsappWindow.close();
+      }
       const errMsg = error instanceof Error ? error.message : String(error);
       console.error('Order placement failed:', { error, tableNumber, cart });
       toast({
@@ -531,6 +677,114 @@ export default function Menu() {
 
   return (
     <div className="min-h-screen pb-8">
+      <Dialog open={shouldAskFulfillment} onOpenChange={() => undefined}>
+        <DialogContent className="max-w-md rounded-xl p-5 sm:p-6 [&>button]:hidden">
+          <DialogHeader className="text-center">
+            <DialogTitle className="text-xl">
+              {selectedFulfillmentMode === 'delivery' ? 'Where should we deliver?' : 'How would you like your order?'}
+            </DialogTitle>
+            <DialogDescription>
+              {selectedFulfillmentMode === 'delivery'
+                ? 'Add your address or use your current location for an exact Google Maps link.'
+                : 'Choose delivery or pickup from the restaurant before browsing the menu.'}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedFulfillmentMode === 'delivery' ? (
+            <div className="space-y-4">
+              <div className="space-y-2 text-left">
+                <label htmlFor="delivery-address" className="text-sm font-semibold text-foreground">
+                  Delivery address
+                </label>
+                <Textarea
+                  id="delivery-address"
+                  value={deliveryAddress}
+                  onChange={(event) => setDeliveryAddress(event.target.value)}
+                  placeholder="Building, street, area, floor, apartment..."
+                  rows={3}
+                  className="resize-none"
+                />
+              </div>
+              <div className="space-y-2 text-left">
+                <label htmlFor="delivery-phone" className="text-sm font-semibold text-foreground">
+                  Contact number
+                </label>
+                <input
+                  id="delivery-phone"
+                  type="tel"
+                  value={deliveryPhone}
+                  onChange={(event) => setDeliveryPhone(event.target.value)}
+                  placeholder="+974..."
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                />
+              </div>
+              <div className="space-y-2 text-left">
+                <label htmlFor="delivery-comment" className="text-sm font-semibold text-foreground">
+                  Delivery comment
+                </label>
+                <Textarea
+                  id="delivery-comment"
+                  value={deliveryComment}
+                  onChange={(event) => setDeliveryComment(event.target.value)}
+                  placeholder="Any delivery instructions or comments..."
+                  rows={2}
+                  className="resize-none"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full gap-2"
+                onClick={handleDetectLocation}
+                disabled={isDetectingLocation}
+              >
+                <LocateFixed className="h-4 w-4" />
+                {isDetectingLocation ? 'Detecting location...' : 'Use my current location'}
+              </Button>
+              {deliveryMapUrl && (
+                <a
+                  href={deliveryMapUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-sm font-medium text-primary"
+                >
+                  <MapPin className="h-4 w-4 shrink-0" />
+                  Google Maps location added
+                </a>
+              )}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button type="button" variant="outline" onClick={() => setSelectedFulfillmentMode(null)}>
+                  Back
+                </Button>
+                <Button type="button" onClick={handleSaveDeliveryDetails} disabled={!hasDeliveryLocation}>
+                  Continue
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-auto min-h-28 flex-col gap-3 border-primary/25 p-4 text-center hover:bg-primary/10"
+                onClick={() => setSelectedFulfillmentMode('delivery')}
+              >
+                <Truck className="h-8 w-8 text-primary" />
+                <span className="text-base font-bold">Delivery</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-auto min-h-28 flex-col gap-3 border-primary/25 p-4 text-center hover:bg-primary/10"
+                onClick={() => handleSaveFulfillment('pickup')}
+              >
+                <Store className="h-8 w-8 text-primary" />
+                <span className="text-base font-bold">Pickup</span>
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Demo Mode Banner */}
       {isDemo && (
         <div className="bg-accent/10 text-accent py-2 px-4 text-center text-sm font-medium">
@@ -556,19 +810,33 @@ export default function Menu() {
                   DEMO
                 </Badge>
               )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCallWaiter}
-                disabled={isCallingWaiter || Boolean(pendingWaiterCallId)}
-                className="flex-1 border-primary/30 bg-primary text-primary-foreground hover:bg-primary/90 sm:flex-none"
-              >
-                <Bell className="h-4 w-4 mr-1" />
-                {pendingWaiterCallId ? t('waiterRequested') : isCallingWaiter ? t('calling') : t('callWaiter')}
-              </Button>
-              <div className="rounded-lg bg-primary/10 px-3 py-2">
-                <span className="text-sm font-bold text-primary">{t('table')} {tableNumber}</span>
-              </div>
+              {isTableVisit ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCallWaiter}
+                    disabled={isCallingWaiter || Boolean(pendingWaiterCallId)}
+                    className="flex-1 border-primary/30 bg-primary text-primary-foreground hover:bg-primary/90 sm:flex-none"
+                  >
+                    <Bell className="h-4 w-4 mr-1" />
+                    {pendingWaiterCallId ? t('waiterRequested') : isCallingWaiter ? t('calling') : t('callWaiter')}
+                  </Button>
+                  <div className="rounded-lg bg-primary/10 px-3 py-2">
+                    <span className="text-sm font-bold text-primary">{t('table')} {tableNumber}</span>
+                  </div>
+                </>
+              ) : fulfillmentMode ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2 border-primary/30 bg-primary/10 text-primary hover:bg-primary/15"
+                  onClick={handleChangeFulfillment}
+                >
+                  {fulfillmentMode === 'delivery' ? <Truck className="h-4 w-4" /> : <Store className="h-4 w-4" />}
+                  {fulfillmentMode === 'delivery' ? 'Delivery' : 'Pickup'}
+                </Button>
+              ) : null}
               <Link to="/admin">
                 <Button variant="ghost" size="icon" className="text-muted-foreground">
                   <Settings className="h-5 w-5" />
@@ -583,6 +851,8 @@ export default function Menu() {
         {orderPlaced ? (
           <OrderSuccess
             tableNumber={tableNumber}
+            orderId={currentOrderId}
+            fulfillmentMode={fulfillmentMode}
             status={currentOrderStatus}
             onNewOrder={handleNewOrder}
           />

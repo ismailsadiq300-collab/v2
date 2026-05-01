@@ -13,6 +13,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useI18n } from '@/lib/i18n';
 import {
+  getOrderNumber,
+  getOrderStatusUrl,
+  getOrderWhatsappUrl,
+  getExpectedDeliveryTime,
+  isDeliveryOrder,
+  withExpectedDeliveryTime,
+} from '@/lib/orderDetails';
+import {
   ArrowLeft,
   Banknote,
   Bell,
@@ -539,6 +547,7 @@ export default function Admin() {
   const [superPassword, setSuperPassword] = useState('');
   const [error, setError] = useState('');
   const [superError, setSuperError] = useState('');
+  const [deliveryEtaInputs, setDeliveryEtaInputs] = useState<Record<string, string>>({});
   const [requirementStates, setRequirementStates] = useState<Record<string, RequirementState>>(() => {
     try {
       const saved = localStorage.getItem('kitchenRequirementStatuses');
@@ -838,15 +847,47 @@ export default function Admin() {
     }
   };
 
-  const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
+  const updateOrderStatus = async (orderId: string, newStatus: Order['status'], notes?: string | null) => {
+    const updateData: TablesUpdate<'orders'> = { status: newStatus };
+    if (notes !== undefined) {
+      updateData.notes = notes;
+    }
+
     const { error } = await supabase
       .from('orders')
-      .update({ status: newStatus })
+      .update(updateData)
       .eq('id', orderId);
 
     if (error) {
       console.error('Error updating order status:', error);
     }
+  };
+
+  const advanceOrderStatus = (order: Order, newStatus: Order['status'], expectedTimeInput?: string) => {
+    if (!order.id) return;
+
+    if (isDeliveryOrder(order) && order.status === 'new' && newStatus === 'preparing') {
+      const expectedTime = (expectedTimeInput || '').trim();
+      if (!expectedTime) return;
+
+      const nextNotes = withExpectedDeliveryTime(order.notes, expectedTime);
+      const acceptedOrder: Order = {
+        ...order,
+        notes: nextNotes,
+        status: newStatus,
+      };
+
+      window.open(getOrderWhatsappUrl(acceptedOrder, getOrderStatusUrl(order.id)), '_blank', 'noopener,noreferrer');
+      updateOrderStatus(order.id, newStatus, nextNotes);
+      setDeliveryEtaInputs(prev => {
+        const next = { ...prev };
+        delete next[order.id as string];
+        return next;
+      });
+      return;
+    }
+
+    updateOrderStatus(order.id, newStatus);
   };
 
   const getNextStatus = (currentStatus: Order['status']): Order['status'] | null => {
@@ -1130,19 +1171,39 @@ export default function Admin() {
                   const status = statusConfig[order.status];
                   const StatusIcon = status.icon;
                   const nextStatus = getNextStatus(order.status);
+                  const orderNumber = getOrderNumber(order.id);
+                  const deliveryOrder = isDeliveryOrder(order);
+                  const savedExpectedTime = getExpectedDeliveryTime(order.notes);
+                  const deliveryEta = order.id
+                    ? deliveryEtaInputs[order.id] ?? savedExpectedTime
+                    : savedExpectedTime;
+                  const shouldSendToDelivery = deliveryOrder && order.status === 'new' && nextStatus === 'preparing';
 
                   return (
                     <Card key={order.id} className="p-5 animate-slide-up">
                       <div className="flex items-start justify-between gap-4 mb-4">
                         <div>
                           <div className="flex flex-wrap items-center gap-2 mb-1">
-                            <span className="font-bold text-2xl">{t('table')} {order.tableNumber}</span>
+                            <span className="font-bold text-2xl">
+                              {deliveryOrder ? 'Delivery Order' : `${t('table')} ${order.tableNumber}`}
+                            </span>
+                            <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
+                              Order #{orderNumber}
+                            </Badge>
+                            {deliveryOrder && (
+                              <Badge className="bg-emerald-600 text-white">
+                                Delivery
+                              </Badge>
+                            )}
                             <Badge className={status.color}>
                               <StatusIcon className="h-3 w-3 mr-1" />
                               {t(getStatusLabelKey(order.status))}
                             </Badge>
                           </div>
                           <p className="text-sm text-muted-foreground">{formatTime(order.timestamp)}</p>
+                          {order.id && (
+                            <p className="mt-1 text-xs text-muted-foreground break-all">Full ID: {order.id}</p>
+                          )}
                         </div>
                         <span className="text-2xl font-bold text-primary">{formatMoney(order.totalPrice)}</span>
                       </div>
@@ -1166,7 +1227,28 @@ export default function Admin() {
                       {order.notes && (
                         <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 mb-3">
                           <p className="text-xs font-semibold uppercase text-primary">{t('orderNotes')}</p>
-                          <p className="text-sm text-foreground mt-1">{order.notes}</p>
+                          <p className="whitespace-pre-line text-sm text-foreground mt-1">{order.notes}</p>
+                        </div>
+                      )}
+
+                      {shouldSendToDelivery && order.id && (
+                        <div className="mb-3 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                          <label htmlFor={`delivery-eta-${order.id}`} className="text-xs font-semibold uppercase text-emerald-700">
+                            Expected delivery time
+                          </label>
+                          <Input
+                            id={`delivery-eta-${order.id}`}
+                            value={deliveryEta}
+                            onChange={(event) => setDeliveryEtaInputs(prev => ({
+                              ...prev,
+                              [order.id as string]: event.target.value,
+                            }))}
+                            placeholder="Example: 30 minutes or 1:30 PM"
+                            className="bg-white"
+                          />
+                          <p className="text-xs text-emerald-700">
+                            This time, the order status link, and the Google Maps location will be sent to the driver.
+                          </p>
                         </div>
                       )}
 
@@ -1174,9 +1256,12 @@ export default function Admin() {
                         <Button
                           className="w-full h-12 text-base"
                           variant={order.status === 'new' ? 'default' : 'outline'}
-                          onClick={() => order.id && updateOrderStatus(order.id, nextStatus)}
+                          onClick={() => advanceOrderStatus(order, nextStatus, deliveryEta)}
+                          disabled={shouldSendToDelivery && !deliveryEta.trim()}
                         >
-                          {t('markAs')} {t(getStatusLabelKey(nextStatus))}
+                          {shouldSendToDelivery
+                            ? 'Accept & Send to Delivery'
+                            : `${t('markAs')} ${t(getStatusLabelKey(nextStatus))}`}
                         </Button>
                       ) : (
                         <div className="rounded-lg bg-success/10 p-3 text-center text-sm font-semibold text-success">

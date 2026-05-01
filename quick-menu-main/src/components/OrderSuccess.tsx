@@ -1,17 +1,22 @@
 import { CheckCircle2, ChefHat, Clock, Utensils } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import type { Order } from '@/types/menu';
 import { useI18n } from '@/lib/i18n';
+import { getOrderNumber } from '@/lib/orderDetails';
 
 interface OrderSuccessProps {
   tableNumber: number;
+  orderId?: string | null;
+  fulfillmentMode?: 'delivery' | 'pickup' | null;
   status: Order['status'];
   onNewOrder: () => void;
 }
 
-export function OrderSuccess({ tableNumber, status, onNewOrder }: OrderSuccessProps) {
+export function OrderSuccess({ tableNumber, orderId, fulfillmentMode, status, onNewOrder }: OrderSuccessProps) {
   const { t } = useI18n();
+  const orderNumber = orderId ? getOrderNumber(orderId) : null;
   const steps: {
     status: Order['status'];
     label: string;
@@ -52,9 +57,20 @@ export function OrderSuccess({ tableNumber, status, onNewOrder }: OrderSuccessPr
         <CheckCircle2 className="h-10 w-10 text-success" />
       </div>
       <h2 className="text-2xl font-bold mb-2">{t('orderPlaced')}</h2>
+      {orderNumber && (
+        <p className="text-sm font-bold text-primary mb-2">Order #{orderNumber}</p>
+      )}
       <p className="text-muted-foreground mb-1">{t('sentToKitchen')}</p>
       <p className="text-muted-foreground mb-5">
-        {t('bringToTable')} <span className="font-semibold text-foreground">{t('table')} {tableNumber}</span>
+        {fulfillmentMode === 'delivery' ? (
+          <>Delivery details were sent with your order.</>
+        ) : fulfillmentMode === 'pickup' ? (
+          <>Your order will be prepared for pickup.</>
+        ) : (
+          <>
+            {t('bringToTable')} <span className="font-semibold text-foreground">{t('table')} {tableNumber}</span>
+          </>
+        )}
       </p>
 
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-4 mb-5 text-left">
@@ -87,9 +103,16 @@ export function OrderSuccess({ tableNumber, status, onNewOrder }: OrderSuccessPr
       </div>
 
       <p className="text-sm text-muted-foreground mb-4">{t('cashOnDelivery')}</p>
-      <Button onClick={onNewOrder} variant="outline">
-        {t('anotherOrder')}
-      </Button>
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+        {orderId && (
+          <Button asChild>
+            <Link to={`/order-status/${orderId}`}>Track Order Status</Link>
+          </Button>
+        )}
+        <Button onClick={onNewOrder} variant="outline">
+          {t('anotherOrder')}
+        </Button>
+      </div>
     </Card>
   );
 }

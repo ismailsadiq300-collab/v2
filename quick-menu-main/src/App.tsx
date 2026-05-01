@@ -19,6 +19,7 @@ const WasteReport = lazy(() => import("./pages/WasteReport"));
 const Reservations = lazy(() => import("./pages/Reservations"));
 const FAQs = lazy(() => import("./pages/FAQs"));
 const Reviews = lazy(() => import("./pages/Reviews"));
+const OrderStatus = lazy(() => import("./pages/OrderStatus"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient();
@@ -43,6 +44,7 @@ const AppRoutes = () => {
           <Route path="/reservations" element={<Reservations />} />
           <Route path="/faqs" element={<FAQs />} />
           <Route path="/reviews" element={<Reviews />} />
+          <Route path="/order-status/:orderId" element={<OrderStatus />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
