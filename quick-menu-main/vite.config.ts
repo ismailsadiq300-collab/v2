@@ -14,8 +14,7 @@ export default defineConfig(({ mode }) => ({
       output: {
         manualChunks(id) {
           if (id.includes("node_modules/@supabase")) return "supabase";
-          if (id.includes("node_modules/@firebase/firestore")) return "firebase-firestore";
-          if (id.includes("node_modules/firebase") || id.includes("node_modules/@firebase")) return "firebase-core";
+          if (id.includes("node_modules/firebase") || id.includes("node_modules/@firebase")) return "firebase";
           if (id.includes("node_modules/react") || id.includes("node_modules/@tanstack")) return "react-vendor";
           if (id.includes("node_modules/lucide-react")) return "icons";
         },
