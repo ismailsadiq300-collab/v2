@@ -45,7 +45,7 @@ const isOrderStatus = (status: unknown): status is Order['status'] =>
   status === 'new' || status === 'preparing' || status === 'ready' || status === 'served';
 
 // Yemeni food categories
-const categories: {
+export const categories: {
   id: string;
   name: string;
   labelKey: TranslationKey;
@@ -65,7 +65,7 @@ const categories: {
 ];
 
 // Sample Yemeni menu data
-const sampleMenuItems: MenuItem[] = [
+export const sampleMenuItems: MenuItem[] = [
   // Picks for you
   { 
     id: 'picks-lahsa-eggs', 
