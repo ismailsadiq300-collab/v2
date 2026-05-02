@@ -789,6 +789,30 @@ export default function Admin() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
+    const loadRequirements = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, 'cookingRequirements'));
+        const items = snapshot.docs.map(requirementDoc => ({
+          id: requirementDoc.id,
+          ...requirementDoc.data(),
+        })) as RequirementItem[];
+        if (items.length > 0) {
+          setRequirementItems(items);
+        } else {
+          await Promise.all(cookingRequirements.map(item => setDoc(doc(db, 'cookingRequirements', item.id), item)));
+          setRequirementItems(cookingRequirements);
+        }
+      } catch (error) {
+        console.error('Error loading cooking requirements:', error);
+      }
+    };
+
+    loadRequirements();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
     const unsubscribe = onSnapshot(doc(db, 'settings', 'adminAnnouncement'), (snapshot) => {
       const text = typeof snapshot.data()?.message === 'string' ? snapshot.data()?.message : '';
       setActiveAnnouncement(text);
@@ -1210,12 +1234,13 @@ export default function Admin() {
     setAdminMenuItems(prev => prev.filter(item => item.id !== itemId));
   };
 
-  const handleSaveRequirementItem = (event: React.FormEvent) => {
+  const handleSaveRequirementItem = async (event: React.FormEvent) => {
     event.preventDefault();
     const id = requirementForm.id.trim() || requirementForm.name.en.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     if (!id || !requirementForm.name.en.trim()) return;
 
     const nextItem = { ...requirementForm, id, par: Number(requirementForm.par) || 1 };
+    await setDoc(doc(db, 'cookingRequirements', id), nextItem);
     setRequirementItems(prev => {
       const without = prev.filter(item => item.id !== id);
       return [...without, nextItem];
@@ -1223,7 +1248,8 @@ export default function Admin() {
     setRequirementForm(defaultRequirementForm);
   };
 
-  const handleDeleteRequirementItem = (itemId: string) => {
+  const handleDeleteRequirementItem = async (itemId: string) => {
+    await deleteDoc(doc(db, 'cookingRequirements', itemId));
     setRequirementItems(prev => prev.filter(item => item.id !== itemId));
     setRequirementStates(prev => {
       const next = { ...prev };
