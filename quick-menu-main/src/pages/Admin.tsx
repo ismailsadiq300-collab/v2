@@ -878,29 +878,32 @@ export default function Admin() {
     }
   };
 
-  const advanceOrderStatus = (order: Order, newStatus: Order['status'], expectedTimeInput?: string) => {
+  const sendDeliveryOrderToDriver = (order: Order, expectedTimeInput?: string) => {
     if (!order.id) return;
 
-    if (isDeliveryOrder(order) && order.status === 'new' && newStatus === 'preparing') {
-      const expectedTime = (expectedTimeInput || '').trim();
-      if (!expectedTime) return;
+    const expectedTime = (expectedTimeInput || '').trim();
+    const nextNotes = expectedTime
+      ? withExpectedDeliveryTime(order.notes, expectedTime)
+      : order.notes || null;
+    const driverOrder: Order = {
+      ...order,
+      notes: nextNotes,
+    };
 
-      const nextNotes = withExpectedDeliveryTime(order.notes, expectedTime);
-      const acceptedOrder: Order = {
-        ...order,
-        notes: nextNotes,
-        status: newStatus,
-      };
+    window.open(getOrderWhatsappUrl(driverOrder, getDriverOrderStatusUrl(order.id)), '_blank', 'noopener,noreferrer');
 
-      window.open(getOrderWhatsappUrl(acceptedOrder, getDriverOrderStatusUrl(order.id)), '_blank', 'noopener,noreferrer');
-      updateOrderStatus(order.id, newStatus, nextNotes);
+    if (nextNotes !== order.notes) {
+      updateOrderStatus(order.id, order.status, nextNotes);
       setDeliveryEtaInputs(prev => {
         const next = { ...prev };
         delete next[order.id as string];
         return next;
       });
-      return;
     }
+  };
+
+  const advanceOrderStatus = (order: Order, newStatus: Order['status']) => {
+    if (!order.id) return;
 
     updateOrderStatus(order.id, newStatus);
   };
@@ -1266,7 +1269,7 @@ export default function Admin() {
                   const deliveryEta = order.id
                     ? deliveryEtaInputs[order.id] ?? savedExpectedTime
                     : savedExpectedTime;
-                  const shouldSendToDelivery = deliveryOrder && order.status === 'new' && nextStatus === 'preparing';
+                  const canSendToDriver = deliveryOrder && order.status !== 'served' && order.id;
 
                   return (
                     <Card key={order.id} className="p-5 animate-slide-up">
@@ -1320,7 +1323,7 @@ export default function Admin() {
                         </div>
                       )}
 
-                      {shouldSendToDelivery && order.id && (
+                      {canSendToDriver && (
                         <div className="mb-3 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                           <label htmlFor={`delivery-eta-${order.id}`} className="text-xs font-semibold uppercase text-emerald-700">
                             Expected delivery time
@@ -1336,8 +1339,15 @@ export default function Admin() {
                             className="bg-white"
                           />
                           <p className="text-xs text-emerald-700">
-                            This time, the order status link, and the Google Maps location will be sent to the driver.
+                            The WhatsApp message includes customer info, Google Maps location, order items, and the live driver status page.
                           </p>
+                          <Button
+                            type="button"
+                            className="w-full bg-emerald-600 text-white hover:bg-emerald-700"
+                            onClick={() => sendDeliveryOrderToDriver(order, deliveryEta)}
+                          >
+                            Send Order to Driver WhatsApp
+                          </Button>
                         </div>
                       )}
 
@@ -1345,12 +1355,9 @@ export default function Admin() {
                         <Button
                           className="w-full h-12 text-base"
                           variant={order.status === 'new' ? 'default' : 'outline'}
-                          onClick={() => advanceOrderStatus(order, nextStatus, deliveryEta)}
-                          disabled={shouldSendToDelivery && !deliveryEta.trim()}
+                          onClick={() => advanceOrderStatus(order, nextStatus)}
                         >
-                          {shouldSendToDelivery
-                            ? 'Accept & Send to Delivery'
-                            : `${t('markAs')} ${t(getStatusLabelKey(nextStatus))}`}
+                          {t('markAs')} {t(getStatusLabelKey(nextStatus))}
                         </Button>
                       ) : (
                         <div className="rounded-lg bg-success/10 p-3 text-center text-sm font-semibold text-success">
