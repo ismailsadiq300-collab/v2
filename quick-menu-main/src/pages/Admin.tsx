@@ -1229,7 +1229,7 @@ export default function Admin() {
               {t('orders')}
             </TabsTrigger>
             <TabsTrigger value="manual" className="py-3">
-              Manual Order
+              {language === 'ar' ? 'طلب يدوي' : 'Manual Order'}
             </TabsTrigger>
             <TabsTrigger value="feedback" className="py-3">
               Feedback
