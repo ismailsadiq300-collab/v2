@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { addDoc, collection, onSnapshot, orderBy, query, Timestamp } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query, setDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { supabase } from '@/integrations/supabase/client';
 import type { Tables, TablesUpdate } from '@/integrations/supabase/types';
@@ -32,14 +32,19 @@ import {
   ChefHat,
   Clock,
   ClipboardList,
+  FileDown,
   HandHelping,
   Lock,
   LockKeyhole,
   LogOut,
+  Megaphone,
   MessageCircle,
   Package,
+  Plus,
   QrCode,
   ReceiptText,
+  Save,
+  Trash2,
   TrendingUp,
   Utensils,
 } from 'lucide-react';
@@ -452,6 +457,28 @@ const expenseCategories = ['Ingredients', 'Staff', 'Rent', 'Utilities', 'Mainten
 
 const formatMoney = (value: number) => `${value.toFixed(2)} QAR`;
 
+type ReportPeriod = 'daily' | 'weekly' | 'monthly';
+
+const defaultMenuForm: MenuItem = {
+  id: '',
+  name: '',
+  description: '',
+  price: 0,
+  category: 'picks',
+  image: '',
+  addOns: [],
+};
+
+const defaultRequirementForm: RequirementItem = {
+  id: '',
+  group: 'rice-grains',
+  name: { en: '', ar: '' },
+  hint: { en: '', ar: '' },
+  icon: '🍽️',
+  unit: 'pcs',
+  par: 1,
+};
+
 const getStatusLabelKey = (status: Order['status']): 'received' | 'preparing' | 'ready' | 'served' => {
   if (status === 'new') return 'received';
   if (status === 'preparing') return 'preparing';
@@ -556,6 +583,21 @@ export default function Admin() {
   const [manualOrderNotes, setManualOrderNotes] = useState('');
   const [manualOrderError, setManualOrderError] = useState('');
   const [isSavingManualOrder, setIsSavingManualOrder] = useState(false);
+  const [adminMenuItems, setAdminMenuItems] = useState<MenuItem[]>(sampleMenuItems);
+  const [menuForm, setMenuForm] = useState<MenuItem>(defaultMenuForm);
+  const [menuMessage, setMenuMessage] = useState('');
+  const [requirementItems, setRequirementItems] = useState<RequirementItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('customCookingRequirements');
+      return saved ? JSON.parse(saved) as RequirementItem[] : cookingRequirements;
+    } catch {
+      return cookingRequirements;
+    }
+  });
+  const [requirementForm, setRequirementForm] = useState<RequirementItem>(defaultRequirementForm);
+  const [announcementText, setAnnouncementText] = useState('');
+  const [activeAnnouncement, setActiveAnnouncement] = useState('');
+  const [reportPeriod, setReportPeriod] = useState<ReportPeriod>('daily');
   const [requirementStates, setRequirementStates] = useState<Record<string, RequirementState>>(() => {
     try {
       const saved = localStorage.getItem('kitchenRequirementStatuses');
@@ -717,6 +759,46 @@ export default function Admin() {
   }, [requirementStates]);
 
   useEffect(() => {
+    localStorage.setItem('customCookingRequirements', JSON.stringify(requirementItems));
+  }, [requirementItems]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const loadMenu = async () => {
+      try {
+        const snapshot = await getDocs(collection(db, 'menu'));
+        const items = snapshot.docs.map(menuDoc => ({
+          id: menuDoc.id,
+          ...menuDoc.data(),
+        })) as MenuItem[];
+        if (items.length > 0) {
+          setAdminMenuItems(items);
+        } else {
+          await Promise.all(sampleMenuItems.map(item => setDoc(doc(db, 'menu', item.id), item)));
+          setAdminMenuItems(sampleMenuItems);
+        }
+      } catch (error) {
+        console.error('Error loading menu items:', error);
+      }
+    };
+
+    loadMenu();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'settings', 'adminAnnouncement'), (snapshot) => {
+      const text = typeof snapshot.data()?.message === 'string' ? snapshot.data()?.message : '';
+      setActiveAnnouncement(text);
+      setAnnouncementText(text);
+    });
+
+    return () => unsubscribe();
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     if (!isSuperAdmin) return;
 
     const expensesQuery = query(collection(db, 'expenses'), orderBy('createdAt', 'desc'));
@@ -843,6 +925,44 @@ export default function Admin() {
     };
   }, [orders, totalRevenue, expenses, wasteLogs]);
 
+  const todayStart = useMemo(() => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }, []);
+  const tomorrowStart = useMemo(() => new Date(todayStart.getTime() + 24 * 60 * 60 * 1000), [todayStart]);
+  const isTodayOrder = (order: Order) => order.timestamp >= todayStart && order.timestamp < tomorrowStart;
+  const freshOrders = orders.filter(order => isTodayOrder(order) && order.status !== 'served');
+  const deliveryOrders = freshOrders.filter(order => isDeliveryOrder(order));
+  const dineInOrders = freshOrders.filter(order => !isDeliveryOrder(order));
+  const olderOrders = orders.filter(order => !isTodayOrder(order) || order.status === 'served');
+
+  const reportRange = useMemo(() => {
+    const end = new Date();
+    const start = new Date();
+    if (reportPeriod === 'daily') {
+      start.setHours(0, 0, 0, 0);
+    } else if (reportPeriod === 'weekly') {
+      start.setDate(start.getDate() - 6);
+      start.setHours(0, 0, 0, 0);
+    } else {
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+    }
+    return { start, end };
+  }, [reportPeriod]);
+
+  const reportOrders = orders.filter(order => order.timestamp >= reportRange.start && order.timestamp <= reportRange.end);
+  const reportExpenses = expenses.filter(expense => expense.createdAt >= reportRange.start && expense.createdAt <= reportRange.end);
+  const reportWasteLogs = wasteLogs.filter(log => {
+    const createdAt = new Date(log.created_at);
+    return createdAt >= reportRange.start && createdAt <= reportRange.end;
+  });
+  const reportRevenue = reportOrders.reduce((sum, order) => sum + order.totalPrice, 0);
+  const reportExpenseTotal = reportExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const reportWasteTotal = reportWasteLogs.reduce((sum, log) => sum + (log.quantity * log.cost_per_unit), 0);
+  const reportNet = reportRevenue - reportExpenseTotal - reportWasteTotal;
+
   const updateWaiterCallStatus = async (callId: string, newStatus: string) => {
     const updateData: TablesUpdate<'waiter_calls'> = { status: newStatus };
 
@@ -921,12 +1041,12 @@ export default function Admin() {
   };
 
   const manualMenuItemsByCategory = useMemo(() => (
-    sampleMenuItems.reduce((acc, item) => {
+    adminMenuItems.reduce((acc, item) => {
       if (!acc[item.category]) acc[item.category] = [];
       acc[item.category].push(item);
       return acc;
     }, {} as Record<string, MenuItem[]>)
-  ), []);
+  ), [adminMenuItems]);
 
   const handleCreateManualOrder = async (event?: React.FormEvent | React.MouseEvent) => {
     event?.preventDefault();
@@ -1058,6 +1178,106 @@ export default function Admin() {
     updateRequirementQuantity(item, current + delta);
   };
 
+  const handleSaveMenuItem = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = menuForm.id.trim() || menuForm.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (!id || !menuForm.name.trim() || !Number.isFinite(Number(menuForm.price))) {
+      setMenuMessage('Add item name and price');
+      return;
+    }
+
+    const nextItem: MenuItem = {
+      ...menuForm,
+      id,
+      name: menuForm.name.trim(),
+      description: menuForm.description.trim(),
+      price: Number(menuForm.price),
+      image: menuForm.image.trim() || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=400&fit=crop',
+      addOns: menuForm.addOns?.filter(addOn => addOn.name.trim()) || [],
+    };
+
+    await setDoc(doc(db, 'menu', id), nextItem);
+    setAdminMenuItems(prev => {
+      const without = prev.filter(item => item.id !== id);
+      return [...without, nextItem];
+    });
+    setMenuForm(defaultMenuForm);
+    setMenuMessage('Menu item saved');
+  };
+
+  const handleDeleteMenuItem = async (itemId: string) => {
+    await deleteDoc(doc(db, 'menu', itemId));
+    setAdminMenuItems(prev => prev.filter(item => item.id !== itemId));
+  };
+
+  const handleSaveRequirementItem = (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = requirementForm.id.trim() || requirementForm.name.en.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (!id || !requirementForm.name.en.trim()) return;
+
+    const nextItem = { ...requirementForm, id, par: Number(requirementForm.par) || 1 };
+    setRequirementItems(prev => {
+      const without = prev.filter(item => item.id !== id);
+      return [...without, nextItem];
+    });
+    setRequirementForm(defaultRequirementForm);
+  };
+
+  const handleDeleteRequirementItem = (itemId: string) => {
+    setRequirementItems(prev => prev.filter(item => item.id !== itemId));
+    setRequirementStates(prev => {
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+  };
+
+  const handleSaveAnnouncement = async () => {
+    await setDoc(doc(db, 'settings', 'adminAnnouncement'), {
+      message: announcementText.trim(),
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const exportAccountingReport = () => {
+    const rows = [
+      ['Report', reportPeriod],
+      ['From', reportRange.start.toLocaleString()],
+      ['To', reportRange.end.toLocaleString()],
+      ['Revenue', reportRevenue.toFixed(2)],
+      ['Expenses', reportExpenseTotal.toFixed(2)],
+      ['Waste', reportWasteTotal.toFixed(2)],
+      ['Net', reportNet.toFixed(2)],
+      [],
+      ['Orders'],
+      ['Order ID', 'Time', 'Type', 'Status', 'Total'],
+      ...reportOrders.map(order => [
+        order.id || '',
+        order.timestamp.toLocaleString(),
+        isDeliveryOrder(order) ? 'Delivery' : 'Dine-in',
+        order.status,
+        order.totalPrice.toFixed(2),
+      ]),
+      [],
+      ['Expenses'],
+      ['Title', 'Category', 'Time', 'Amount'],
+      ...reportExpenses.map(expense => [
+        expense.title,
+        expense.category,
+        expense.createdAt.toLocaleString(),
+        expense.amount.toFixed(2),
+      ]),
+    ];
+    const csv = rows.map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${reportPeriod}-accounting-report.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleAddExpense = async (event: React.FormEvent) => {
     event.preventDefault();
     const amount = Number.parseFloat(expenseForm.amount);
@@ -1145,7 +1365,7 @@ export default function Admin() {
             </div>
             <div className="flex items-center gap-2">
               <Link to="/qr-codes">
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" className="border-white/30 bg-white text-emerald-800 hover:bg-emerald-50 hover:text-emerald-900">
                   <QrCode className="h-4 w-4 mr-2" />
                   {t('qrCodes')}
                 </Button>
@@ -1159,6 +1379,18 @@ export default function Admin() {
       </header>
 
       <main className="container py-6">
+        {activeAnnouncement && (
+          <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+            <div className="flex items-start gap-3">
+              <Megaphone className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+              <div>
+                <p className="text-sm font-bold">Admin Notice</p>
+                <p className="text-sm">{activeAnnouncement}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
           <Card className="p-4">
             <p className="text-sm text-muted-foreground">{t('active')}</p>
@@ -1227,7 +1459,7 @@ export default function Admin() {
         )}
 
         <Tabs defaultValue="orders" className="space-y-5">
-          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-5">
+          <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-6">
             <TabsTrigger value="orders" className="py-3">
               {t('orders')}
             </TabsTrigger>
@@ -1242,6 +1474,9 @@ export default function Admin() {
             </TabsTrigger>
             <TabsTrigger value="accounting" className="py-3">
               {t('accounting')}
+            </TabsTrigger>
+            <TabsTrigger value="super" className="py-3">
+              Super Admin
             </TabsTrigger>
           </TabsList>
 
@@ -1258,8 +1493,22 @@ export default function Admin() {
                 <p className="text-muted-foreground">{t('ordersAppear')}</p>
               </Card>
             ) : (
-              <div className="grid gap-4 xl:grid-cols-2">
-                {orders.map(order => {
+              <div className="space-y-6">
+                {[
+                  { title: 'Today Delivery', subtitle: 'Fresh delivery orders for today', orders: deliveryOrders, className: 'border-emerald-200 bg-emerald-50/60' },
+                  { title: 'Today Dine-in', subtitle: 'Fresh table orders for today', orders: dineInOrders, className: 'border-sky-200 bg-sky-50/60' },
+                  { title: 'Completed / Previous Days', subtitle: 'Served orders or orders from earlier days', orders: olderOrders, className: 'border-slate-200 bg-slate-100/70' },
+                ].filter(section => section.orders.length > 0).map(section => (
+                  <section key={section.title} className={`rounded-lg border p-4 ${section.className}`}>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h2 className="text-lg font-bold">{section.title}</h2>
+                        <p className="text-sm text-muted-foreground">{section.subtitle}</p>
+                      </div>
+                      <Badge variant="outline" className="bg-white/80">{section.orders.length} orders</Badge>
+                    </div>
+                    <div className="grid gap-4 xl:grid-cols-2">
+                {section.orders.map(order => {
                   const status = statusConfig[order.status];
                   const StatusIcon = status.icon;
                   const nextStatus = getNextStatus(order.status);
@@ -1367,6 +1616,9 @@ export default function Admin() {
                     </Card>
                   );
                 })}
+                    </div>
+                  </section>
+                ))}
               </div>
             )}
           </TabsContent>
@@ -1535,12 +1787,12 @@ export default function Admin() {
                     <p className="text-sm text-muted-foreground">{t('kitchenChecks')}</p>
                   </div>
                 </div>
-                <Badge className="bg-emerald-700 text-white">{cookingRequirements.length} {t('item')}</Badge>
+                <Badge className="bg-emerald-700 text-white">{requirementItems.length} {t('item')}</Badge>
               </div>
 
               <div className="space-y-6">
                 {requirementGroups.map(group => {
-                  const groupItems = cookingRequirements.filter(item => item.group === group.id);
+                  const groupItems = requirementItems.filter(item => item.group === group.id);
 
                   return (
                     <section key={group.id}>
@@ -1663,6 +1915,122 @@ export default function Admin() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="super" className="space-y-5">
+            {!isSuperAdmin ? (
+              <Card className="max-w-md p-6 shadow-sm">
+                <div className="mb-4 flex items-center gap-3">
+                  <LockKeyhole className="h-8 w-8 text-primary" />
+                  <div>
+                    <h2 className="text-xl font-bold">{t('superAdminOnly')}</h2>
+                    <p className="text-sm text-muted-foreground">{t('unlockAccounting')}</p>
+                  </div>
+                </div>
+                <form onSubmit={handleSuperLogin} className="space-y-3">
+                  <Input type="password" placeholder={t('superAdminPassword')} value={superPassword} onChange={(event) => setSuperPassword(event.target.value)} />
+                  {superError && <p className="text-sm text-destructive">{superError}</p>}
+                  <Button type="submit" className="w-full">{t('unlockAccounting')}</Button>
+                </form>
+              </Card>
+            ) : (
+              <div className="grid gap-5 xl:grid-cols-2">
+                <Card className="p-5">
+                  <div className="mb-4 flex items-center gap-3">
+                    <Megaphone className="h-6 w-6 text-primary" />
+                    <div>
+                      <h2 className="text-xl font-bold">General Admin Message</h2>
+                      <p className="text-sm text-muted-foreground">Shows as a notice at the top of the admin page.</p>
+                    </div>
+                  </div>
+                  <Textarea value={announcementText} onChange={(event) => setAnnouncementText(event.target.value)} rows={3} placeholder="Write an announcement for staff..." />
+                  <Button className="mt-3 gap-2" onClick={handleSaveAnnouncement}>
+                    <Save className="h-4 w-4" />
+                    Save Message
+                  </Button>
+                </Card>
+
+                <Card className="p-5">
+                  <h2 className="mb-4 text-xl font-bold">Add / Edit Menu Item</h2>
+                  <form onSubmit={handleSaveMenuItem} className="grid gap-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Input placeholder="Item ID" value={menuForm.id} onChange={(event) => setMenuForm(prev => ({ ...prev, id: event.target.value }))} />
+                      <select className="rounded-md border border-input bg-background px-3 py-2 text-sm" value={menuForm.category} onChange={(event) => setMenuForm(prev => ({ ...prev, category: event.target.value }))}>
+                        {categories.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}
+                      </select>
+                    </div>
+                    <Input placeholder="Name" value={menuForm.name} onChange={(event) => setMenuForm(prev => ({ ...prev, name: event.target.value }))} />
+                    <Input placeholder="Description" value={menuForm.description} onChange={(event) => setMenuForm(prev => ({ ...prev, description: event.target.value }))} />
+                    <div className="grid gap-3 sm:grid-cols-[1fr_2fr]">
+                      <Input type="number" min="0" step="0.01" placeholder="Price" value={menuForm.price || ''} onChange={(event) => setMenuForm(prev => ({ ...prev, price: Number(event.target.value) }))} />
+                      <Input placeholder="Image URL" value={menuForm.image} onChange={(event) => setMenuForm(prev => ({ ...prev, image: event.target.value }))} />
+                    </div>
+                    {menuMessage && <p className="text-sm text-primary">{menuMessage}</p>}
+                    <Button type="submit" className="gap-2">
+                      <Save className="h-4 w-4" />
+                      Save Menu Item
+                    </Button>
+                  </form>
+                </Card>
+
+                <Card className="p-5 xl:col-span-2">
+                  <h2 className="mb-4 text-xl font-bold">Current Menu</h2>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {adminMenuItems.map(item => (
+                      <div key={item.id} className="rounded-lg border border-border p-3">
+                        <div className="mb-2 flex items-start gap-3">
+                          <img src={item.image} alt={item.name} className="h-14 w-14 rounded-lg object-cover" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-bold">{item.name}</p>
+                            <p className="text-sm text-primary">{formatMoney(item.price)}</p>
+                            <p className="truncate text-xs text-muted-foreground">{item.category}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setMenuForm(item)}>Edit</Button>
+                          <Button size="sm" variant="destructive" onClick={() => handleDeleteMenuItem(item.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                <Card className="p-5 xl:col-span-2">
+                  <h2 className="mb-4 text-xl font-bold">Cooking Requirements</h2>
+                  <form onSubmit={handleSaveRequirementItem} className="mb-5 grid gap-3 md:grid-cols-3">
+                    <Input placeholder="English name" value={requirementForm.name.en} onChange={(event) => setRequirementForm(prev => ({ ...prev, name: { ...prev.name, en: event.target.value } }))} />
+                    <Input placeholder="Arabic name" value={requirementForm.name.ar} onChange={(event) => setRequirementForm(prev => ({ ...prev, name: { ...prev.name, ar: event.target.value } }))} />
+                    <select className="rounded-md border border-input bg-background px-3 py-2 text-sm" value={requirementForm.group} onChange={(event) => setRequirementForm(prev => ({ ...prev, group: event.target.value }))}>
+                      {requirementGroups.map(group => <option key={group.id} value={group.id}>{group.label.en}</option>)}
+                    </select>
+                    <Input placeholder="Hint" value={requirementForm.hint.en} onChange={(event) => setRequirementForm(prev => ({ ...prev, hint: { ...prev.hint, en: event.target.value } }))} />
+                    <Input placeholder="Unit" value={requirementForm.unit} onChange={(event) => setRequirementForm(prev => ({ ...prev, unit: event.target.value }))} />
+                    <Input type="number" min="0" placeholder="Par" value={requirementForm.par} onChange={(event) => setRequirementForm(prev => ({ ...prev, par: Number(event.target.value) }))} />
+                    <Button type="submit" className="gap-2 md:col-span-3">
+                      <Plus className="h-4 w-4" />
+                      Save Requirement
+                    </Button>
+                  </form>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {requirementItems.map(item => (
+                      <div key={item.id} className="rounded-lg border border-border p-3">
+                        <p className="font-bold">{item.icon} {item.name.en}</p>
+                        <p className="text-sm text-muted-foreground">{item.hint.en}</p>
+                        <p className="text-xs text-primary">Par: {item.par} {item.unit}</p>
+                        <div className="mt-3 flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => setRequirementForm(item)}>Edit</Button>
+                          <Button size="sm" variant="destructive" onClick={() => handleDeleteRequirementItem(item.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
+            )}
+          </TabsContent>
+
           <TabsContent value="accounting" className="space-y-5">
             {!isSuperAdmin ? (
               <Card className="max-w-md p-6 shadow-sm">
@@ -1705,6 +2073,44 @@ export default function Admin() {
                     Net Margin: {accounting.netMargin.toFixed(1)}%
                   </span>
                 </div>
+
+                <Card className="p-5 bg-white shadow-sm">
+                  <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <h2 className="text-xl font-bold">Reports</h2>
+                      <p className="text-sm text-muted-foreground">Daily, weekly, and monthly statement with export.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(['daily', 'weekly', 'monthly'] as ReportPeriod[]).map(period => (
+                        <Button key={period} type="button" variant={reportPeriod === period ? 'default' : 'outline'} onClick={() => setReportPeriod(period)}>
+                          {period[0].toUpperCase() + period.slice(1)}
+                        </Button>
+                      ))}
+                      <Button type="button" variant="outline" className="gap-2" onClick={exportAccountingReport}>
+                        <FileDown className="h-4 w-4" />
+                        Export
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="rounded-lg bg-emerald-50 p-4">
+                      <p className="text-xs font-bold uppercase text-emerald-700">Revenue</p>
+                      <p className="text-2xl font-bold text-emerald-800">{formatMoney(reportRevenue)}</p>
+                    </div>
+                    <div className="rounded-lg bg-red-50 p-4">
+                      <p className="text-xs font-bold uppercase text-red-700">Expenses</p>
+                      <p className="text-2xl font-bold text-red-700">{formatMoney(reportExpenseTotal + reportWasteTotal)}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-4">
+                      <p className="text-xs font-bold uppercase text-slate-600">Net</p>
+                      <p className={`text-2xl font-bold ${reportNet >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>{formatMoney(reportNet)}</p>
+                    </div>
+                    <div className="rounded-lg bg-blue-50 p-4">
+                      <p className="text-xs font-bold uppercase text-blue-700">Orders</p>
+                      <p className="text-2xl font-bold text-blue-800">{reportOrders.length}</p>
+                    </div>
+                  </div>
+                </Card>
 
                 {/* 4 KPI cards */}
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
